@@ -8,5 +8,3 @@ services:
     envVars:
       - key: AUTO_START_BOT
         value: "true"
-      - key: PORT
-        value: "8000"

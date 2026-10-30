@@ -353,8 +353,8 @@ async def market_polling_loop() -> None:
 
 async def keep_alive_loop() -> None:
     """
-    Auto-ping preventivo cada 10 minutos cuando se despliega en servidores gratuitos
-    (como Render o Koyeb) si se define RENDER_EXTERNAL_URL o PUBLIC_URL.
+    Auto-ping preventivo cada 4 minutos cuando se despliega en Render.com
+    (Render inyecta automáticamente la variable RENDER_EXTERNAL_URL).
     """
     target_url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")
     if not target_url:
@@ -362,7 +362,7 @@ async def keep_alive_loop() -> None:
     health_url = f"{target_url.rstrip('/')}/api/health"
     async with httpx.AsyncClient(timeout=10.0) as client:
         while True:
-            await asyncio.sleep(600)
+            await asyncio.sleep(240)
             try:
                 await client.get(health_url)
             except Exception:
