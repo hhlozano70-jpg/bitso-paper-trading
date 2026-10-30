@@ -14,7 +14,7 @@ class PaperTradingEngine:
     comisiones configurables y calculando PnL realizado y no realizado en tiempo real.
     """
 
-    def __init__(self, initial_cash_mxn: float = 100_000.0, fee_rate: float = 0.0015) -> None:
+    def __init__(self, initial_cash_mxn: float = 100_000.0, fee_rate: float = 0.0008) -> None:
         self.initial_cash_mxn = initial_cash_mxn
         self.cash_mxn = initial_cash_mxn
         self.fee_rate = fee_rate  # 0.15% por defecto (ajustable en la UI)

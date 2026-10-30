@@ -17,9 +17,9 @@ class TradingBot:
         self.strategy: str = "sma_rsi"  # "sma_rsi" | "orderbook_imbalance" | "ai_custom"
         self.book: str = "btc_mxn"
         self.trade_size_pct: float = 15.0  # % del efectivo disponible por compra
-        self.take_profit_pct: float = 0.45  # % de ganancia para tomar utilidad
-        self.stop_loss_pct: float = 0.30    # % de pérdida máxima para cortar pérdidas
-        self.cooldown_seconds: int = 12     # Segundos mínimos entre operaciones del bot
+        self.take_profit_pct: float = 2.20  # % de ganancia neta para tomar utilidad
+        self.stop_loss_pct: float = 1.60    # % de pérdida máxima (mayor al spread + comisión para evitar cierres prematuros)
+        self.cooldown_seconds: int = 45     # Segundos mínimos entre operaciones del bot
         self.last_trade_ts: float = 0.0
         self.last_signal: Dict[str, Any] = {
             "action": "HOLD",

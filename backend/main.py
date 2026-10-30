@@ -52,7 +52,7 @@ class ForceBotStepRequest(BaseModel):
 
 
 bitso = BitsoClient()
-engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0015)
+engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0008)
 bot = TradingBot()
 scanner = OpportunityScanner()
 
