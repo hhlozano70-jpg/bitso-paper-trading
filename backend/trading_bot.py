@@ -17,13 +17,13 @@ class TradingBot:
         self.auto_tp_sl_by_coin: bool = True  # TP y SL dinámicos automatizados
         self.strategy: str = "ai_custom"
         self.book: str = "btc_mxn"
-        self.trade_size_pct: float = 23.0  # Asignación controlada
-        self.take_profit_pct: float = 0.40  # Meta de Take Profit alcanzable
-        self.stop_loss_pct: float = 0.38    # SL estricto máximo para ratio riesgo/beneficio asimétrico
-        self.trailing_arm_pct: float = 0.16 # Activa candado de ganancia al tocar +0.16%
-        self.trailing_drop_pct: float = 0.04 # Asegura ganancia si retrocede desde su máximo
-        self.min_hold_seconds: int = 150    # Periodo de maduración obligatorio (2.5 minutos anti-churn)
-        self.cooldown_seconds: int = 15     # Segundos mínimos entre órdenes del bot
+        self.trade_size_pct: float = 45.0  # Asignación concentrada (máx 2 posiciones de ~45k cada una)
+        self.take_profit_pct: float = 0.55  # Meta de Take Profit sustancial (+0.55% = ~$250 MXN)
+        self.stop_loss_pct: float = 0.35    # SL estricto máximo (-0.35% = ~$155 MXN)
+        self.trailing_arm_pct: float = 0.30 # Activa candado de ganancia al tocar +0.30%
+        self.trailing_drop_pct: float = 0.08 # Asegura ganancia manteniendo al menos +0.22%
+        self.min_hold_seconds: int = 240    # Periodo de maduración obligatorio (4 minutos anti-churn)
+        self.cooldown_seconds: int = 75     # Cooldown entre órdenes del bot (elimina sobre-operación)
         self.last_trade_ts: float = 0.0
         self.last_signal: Dict[str, Any] = {
             "action": "HOLD",

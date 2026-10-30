@@ -53,14 +53,19 @@ class ForceBotStepRequest(BaseModel):
     target_book: Optional[str] = None
 
 
+ALLOWED_AUTO_BOOKS = {
+    "btc_mxn", "eth_mxn", "sol_mxn", "xrp_mxn",
+    "nvda_stk", "aapl_stk", "nq_fut"
+}
+
 bitso = BitsoClient()
 engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0003)
 bot = TradingBot()
 bot.enabled = True
 bot.multi_asset_auto = True
 bot.auto_tp_sl_by_coin = True
-bot.trade_size_pct = 23.0
-bot.cooldown_seconds = 4
+bot.trade_size_pct = 45.0
+bot.cooldown_seconds = 75
 
 scanner = OpportunityScanner()
 
@@ -179,9 +184,9 @@ def _build_managed_4_assets(
             },
         )
         opp = opp_by_book.get(b, {})
-        auto_tp = float(opp.get("auto_tp_pct") or pos.get("auto_tp_pct") or 0.35)
-        auto_sl = float(opp.get("auto_sl_pct") or pos.get("auto_sl_pct") or 0.65)
-        auto_trail = float(opp.get("auto_trail_arm_pct") or round(auto_tp * 0.48, 2))
+        auto_tp = float(opp.get("auto_tp_pct") or pos.get("auto_tp_pct") or 0.55)
+        auto_sl = float(opp.get("auto_sl_pct") or pos.get("auto_sl_pct") or 0.35)
+        auto_trail = float(opp.get("auto_trail_arm_pct") or 0.30)
 
         avg_entry = float(pos.get("avg_buy_price") or tk.get("last") or 0.0)
         tp_price = round(avg_entry * (1.0 + auto_tp / 100.0), 6 if avg_entry < 1 else 2) if avg_entry > 0 else 0.0
@@ -299,55 +304,50 @@ async def run_bot_cycle(
             sym = ASSET_CATALOG.get(held_book, {}).get("symbol", held_book.upper())
 
             if bot.auto_tp_sl_by_coin:
-                tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or bot.take_profit_pct)
-                raw_sl = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or bot.stop_loss_pct)
-                # Pilar 2: Techo estricto de Stop Loss a máximo 0.40% para prevenir pérdidas profundas
-                sl_target = min(0.40, raw_sl)
-                trail_arm = float(opp_info.get("auto_trail_arm_pct") or max(0.14, min(0.22, tp_target * 0.40)))
-                trail_drop = float(opp_info.get("auto_trail_drop_pct") or max(0.04, tp_target * 0.12))
+                tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or 0.55)
+                raw_sl = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or 0.35)
+                sl_target = min(0.35, raw_sl)
+                trail_arm = float(opp_info.get("auto_trail_arm_pct") or 0.30)
+                trail_drop = float(opp_info.get("auto_trail_drop_pct") or 0.08)
             else:
                 tp_target = bot.take_profit_pct
-                sl_target = min(0.40, bot.stop_loss_pct)
+                sl_target = min(0.35, bot.stop_loss_pct)
                 trail_arm = bot.trailing_arm_pct
                 trail_drop = bot.trailing_drop_pct
 
             exit_reason = None
 
-            # 1. Take Profit Principal Automatizado
+            # 1. Take Profit Principal Automatizado (+0.48% a +0.80% meta real)
             if unr_pct >= tp_target:
                 exit_reason = f"[Sniper TP Ganador] {sym} alcanzó meta de +{unr_pct:.2f}% (Target: +{tp_target:.2f}%)"
 
-            # 2. Trailing Profit Lock: Asegura ganancia cuando sube y empieza a retroceder
-            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.04:
+            # 2. Trailing Profit Lock: Asegura ganancia cuando sube sobre +0.30% y retrocede 0.08%
+            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.18:
                 exit_reason = (
                     f"[Trailing Profit Asegurado] {sym} aseguró +{unr_pct:.2f}% "
                     f"(pico +{peak_pct:.2f}%)"
                 )
 
-            # 3. Breakeven Shield Ágil: Si ya tocó +0.14%, asegura que no caiga a pérdidas (cierra en +0.02% min)
-            elif peak_pct >= 0.14 and unr_pct <= 0.03 and unr_pct >= -0.04:
-                exit_reason = f"[Breakeven Shield] {sym} protegido sin pérdidas (+{unr_pct:.2f}%)"
+            # 3. Breakeven Shield Firme: Si ya tocó +0.25%, asegura que no caiga a pérdidas (cierra en +0.08% min)
+            elif peak_pct >= 0.25 and unr_pct <= 0.10 and unr_pct >= 0.02:
+                exit_reason = f"[Breakeven Shield] {sym} protegido con ganancia (+{unr_pct:.2f}%)"
 
-            # 4. Toma de ganancia temprana en verde si llega a resistencia clara
-            elif unr_pct >= 0.14 and asset_rsi >= 64.0 and hold_sec >= 35:
-                exit_reason = f"[Scalp Verde en Resistencia] {sym} cobró +{unr_pct:.2f}% al llegar a sobrecompra (RSI={asset_rsi:.1f})"
+            # 4. Toma de ganancia en verde si llega a fuerte sobrecompra (RSI >= 70 y PnL >= +0.35%)
+            elif unr_pct >= 0.35 and asset_rsi >= 70.0 and hold_sec >= 120:
+                exit_reason = f"[Scalp Verde en Resistencia] {sym} cobró +{unr_pct:.2f}% al llegar a sobrecompra extrema (RSI={asset_rsi:.1f})"
 
-            # 5. Corte Preventivo Ágil: Si lleva más de 90s estancado en pérdidas (<= -0.22%) y con debilidad técnica
-            elif unr_pct <= -0.22 and hold_sec >= 90 and asset_rsi <= 42.0:
-                exit_reason = f"[Corte Preventivo Ágil] {sym} cortó pérdida temprano en {unr_pct:+.2f}% tras {hold_sec}s sin rebote (RSI={asset_rsi:.1f})"
-
-            # 6. Stop Loss Estricto Capped (corte defensivo final máximo a -0.40%)
+            # 5. Stop Loss Estricto Capped (corte defensivo inquebrantable a -0.35% máx)
             elif unr_pct <= -sl_target:
                 exit_reason = f"[Stop Loss Controlado] {sym} cortó pérdida en {unr_pct:+.2f}% (SL Máx: -{sl_target:.2f}%)"
 
-            # 7. Rotación por Oportunidad Superior: ESTRICTAMENTE PROHIBIDO VENDER EN ROJO/PÉRDIDA
-            # Solo se permite rotar si la posición ya está en VERDE (ganancia neta > 0) Y lleva más de 5 minutos
+            # 6. Rotación por Oportunidad Superior: Solo si la posición ya está en VERDE SUSTANCIAL (>= +0.35%)
             elif (
-                unr_pct >= 0.08
-                and hold_sec >= 300
+                unr_pct >= 0.35
+                and hold_sec >= 360
                 and best_unheld_opp
+                and best_unheld_opp["book"] in ALLOWED_AUTO_BOOKS
                 and (best_unheld_opp["opportunity_score"] - current_score) >= 20.0
-                and best_unheld_opp["opportunity_score"] >= 78.0
+                and best_unheld_opp["opportunity_score"] >= 80.0
             ):
                 new_sym = best_unheld_opp["symbol"]
                 exit_reason = (
@@ -369,34 +369,39 @@ async def run_bot_cycle(
                     bot.last_trade_ts = time.time()
                     last_executed_trade = res["trade"]
 
-        # B) Entradas Selectivas: Solo activos con confirmación de rebote, bajo spread y libro alcista
+        # B) Entradas Selectivas: Solo los 7 activos líderes ultra-líquidos, máx 2 posiciones abiertas
         portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
         positions = portfolio.get("positions", {})
         open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
 
-        if open_positions_count < 4 and engine.cash_mxn >= 250.0:
+        if open_positions_count < 2 and engine.cash_mxn >= 500.0:
             chosen_opp = None
-            if target_book:
+            if target_book and target_book in ALLOWED_AUTO_BOOKS:
                 chosen_opp = next((o for o in opportunities_cache if o["book"] == target_book), None)
             elif opportunities_cache:
                 for opp in opportunities_cache:
                     b = opp["book"]
+                    # REGLA DE ORO: Solo los 7 activos líderes ultra-líquidos
+                    if b not in ALLOWED_AUTO_BOOKS:
+                        continue
+
                     already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
                     spread_bps = float(opp.get("spread_bps", 99.0))
                     macro_status = str(opp.get("macro_status", ""))
+                    rsi = float(opp.get("rsi_14", 50.0))
 
-                    # 4 Pilares de Entrada:
-                    # 1. Sin posición previa
-                    # 2. Score >= 65
-                    # 3. Spread ultra-bajo <= 5.8 bps (evita activos costosos como DOGE/NGAS)
-                    # 4. Macro trend alineado (no bloqueado por caída de BTC o Nasdaq)
-                    # 5. Sin estar en sobrecompra (RSI <= 52)
+                    # 4 Pilares Quirúrgicos de Entrada:
+                    # 1. Sin posición previa en este activo
+                    # 2. Score >= 76.0 (Alta certeza)
+                    # 3. Spread ultra-bajo <= 4.2 bps (Liquidez institucional)
+                    # 4. Macro trend alineado (no bloqueado por BTC o Nasdaq)
+                    # 5. Entrada en retroceso real: RSI <= 42.0 (no perseguir techos)
                     if (
                         not already_held
-                        and opp["opportunity_score"] >= 65.0
-                        and spread_bps <= 5.8
+                        and opp["opportunity_score"] >= 76.0
+                        and spread_bps <= 4.2
                         and "Bloqueado" not in macro_status
-                        and float(opp.get("rsi_14", 50.0)) <= 52.0
+                        and rsi <= 42.0
                     ):
                         # Pilar 3: Confirmación de Libro de Órdenes (Bid Imbalance >= 49%)
                         ob = order_book_cache.get(b)
@@ -407,10 +412,10 @@ async def run_bot_cycle(
 
             if chosen_opp:
                 b = chosen_opp["book"]
-                slots_remaining = max(1, 4 - open_positions_count)
+                slots_remaining = max(1, 2 - open_positions_count)
                 mxn_to_spend = min(
-                    engine.cash_mxn * 0.92,
-                    max(engine.cash_mxn / slots_remaining * 0.90, engine.cash_mxn * (bot.trade_size_pct / 100.0)),
+                    engine.cash_mxn * 0.95,
+                    max(engine.cash_mxn / slots_remaining * 0.92, engine.cash_mxn * (bot.trade_size_pct / 100.0)),
                 )
                 if mxn_to_spend >= 100.0 and b in tickers_cache:
                     if len(price_history_by_book.get(b, [])) < 5:

@@ -90,8 +90,8 @@ class PaperTradingEngine:
                 "amount": 0.0,
                 "avg_buy_price": 0.0,
                 "peak_pnl_pct": 0.0,
-                "auto_tp_pct": 0.38,
-                "auto_sl_pct": 0.36,
+                "auto_tp_pct": 0.55,
+                "auto_sl_pct": 0.35,
                 "realized_pnl": 0.0,
                 "total_bought_mxn": 0.0,
                 "total_sold_mxn": 0.0,
@@ -427,10 +427,10 @@ class PaperTradingEngine:
                 pos["peak_pnl_pct"] = 0.0
 
             opp_info = opp_map.get(book, {})
-            auto_tp = float(opp_info.get("auto_tp_pct") or pos.get("auto_tp_pct") or 0.35)
-            auto_sl = float(opp_info.get("auto_sl_pct") or pos.get("auto_sl_pct") or 0.65)
-            auto_trail_arm = float(opp_info.get("auto_trail_arm_pct") or round(auto_tp * 0.48, 2))
-            auto_trail_drop = float(opp_info.get("auto_trail_drop_pct") or round(auto_tp * 0.20, 2))
+            auto_tp = float(opp_info.get("auto_tp_pct") or pos.get("auto_tp_pct") or 0.55)
+            auto_sl = float(opp_info.get("auto_sl_pct") or pos.get("auto_sl_pct") or 0.35)
+            auto_trail_arm = float(opp_info.get("auto_trail_arm_pct") or 0.30)
+            auto_trail_drop = float(opp_info.get("auto_trail_drop_pct") or 0.08)
 
             pos["auto_tp_pct"] = auto_tp
             pos["auto_sl_pct"] = auto_sl
@@ -469,10 +469,10 @@ class PaperTradingEngine:
                 "unrealized_pnl_mxn": 0.0,
                 "unrealized_pnl_pct": 0.0,
                 "peak_pnl_pct": 0.0,
-                "auto_tp_pct": float(opp_info.get("auto_tp_pct", 0.35)),
-                "auto_sl_pct": float(opp_info.get("auto_sl_pct", 0.65)),
-                "auto_trail_arm_pct": float(opp_info.get("auto_trail_arm_pct", 0.16)),
-                "auto_trail_drop_pct": float(opp_info.get("auto_trail_drop_pct", 0.07)),
+                "auto_tp_pct": float(opp_info.get("auto_tp_pct", 0.55)),
+                "auto_sl_pct": float(opp_info.get("auto_sl_pct", 0.35)),
+                "auto_trail_arm_pct": float(opp_info.get("auto_trail_arm_pct", 0.30)),
+                "auto_trail_drop_pct": float(opp_info.get("auto_trail_drop_pct", 0.08)),
                 "realized_pnl_mxn": 0.0,
             }
 

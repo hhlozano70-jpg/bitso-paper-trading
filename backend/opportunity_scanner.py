@@ -19,7 +19,7 @@ class OpportunityScanner:
 
     PREMIER_LIQUID_PAIRS = {
         "btc_mxn", "eth_mxn", "sol_mxn", "xrp_mxn",
-        "nvda_stk", "aapl_stk", "tsla_stk", "nq_fut", "es_fut", "usd_mxn"
+        "nvda_stk", "aapl_stk", "nq_fut"
     }
 
     @staticmethod
@@ -131,32 +131,19 @@ class OpportunityScanner:
         friction_floor_pct = roundtrip_fee_pct + (spread_pct * 0.65)
 
         # 3. Volatilidad combinada y targets realistas
-        scalp_move_pct = max(tick_atr_pct * 2.0, volatility_24h_pct * 0.05)
+        scalp_move_pct = max(tick_atr_pct * 2.2, volatility_24h_pct * 0.06)
 
-        # Ajustar según categoría del activo con estricta asimetría riesgo/beneficio
-        # El Stop Loss NUNCA debe ser mayor a 0.40% para evitar pérdidas acumuladas
-        if category in ("Divisas & FX", "Oro & RWA"):
-            base_tp = max(0.20, min(0.38, friction_floor_pct + scalp_move_pct * 0.75))
-            base_sl = max(0.24, min(0.34, base_tp * 0.85))
-        elif category in ("Acciones", "Futuros"):
-            base_tp = max(0.28, min(0.52, friction_floor_pct + scalp_move_pct * 0.90))
-            base_sl = max(0.26, min(0.36, base_tp * 0.85))
-        elif category == "Alta Volatilidad":
-            base_tp = max(0.35, min(0.65, friction_floor_pct + scalp_move_pct * 1.05))
-            base_sl = max(0.28, min(0.40, base_tp * 0.75))
-        else:
-            # Cripto MXN y Layer-1 / DeFi
-            base_tp = max(0.30, min(0.58, friction_floor_pct + scalp_move_pct * 0.95))
-            base_sl = max(0.26, min(0.38, base_tp * 0.80))
+        # Asimetría Quirúrgica: Take Profit debe superar con creces al Stop Loss
+        # Comisiones roundtrip (0.06%) + spread (~0.04%) = ~0.10% costo base
+        base_tp = max(0.48, min(0.80, friction_floor_pct + scalp_move_pct * 1.15))
+        base_sl = 0.35  # Stop Loss rígido e inamovible en 0.35%
 
-        # STOP LOSS MÁXIMO ESTRICTO: NUNCA SUPERAR 0.40%
-        base_sl = min(0.40, base_sl)
         auto_tp = round(base_tp, 2)
-        auto_sl = round(base_sl, 2)
+        auto_sl = 0.35
 
-        # Trailing Stop se activa al alcanzar el 40% del recorrido hacia el Take Profit (mínimo 0.14%)
-        auto_trail_arm = round(max(0.14, min(0.22, auto_tp * 0.40)), 2)
-        auto_trail_drop = round(max(0.04, auto_tp * 0.12), 2)
+        # Trailing Stop se activa únicamente al alcanzar +0.30% y protege al menos +0.22%
+        auto_trail_arm = 0.30
+        auto_trail_drop = 0.08
 
         return {
             "auto_tp_pct": auto_tp,
@@ -299,24 +286,24 @@ class OpportunityScanner:
                     score += 6.0
                     macro_status = "Bolsa Alcista"
 
-            # Filtro 2: Preferencia por Activos Líquidos Premier vs Memes
+            # Filtro 2: Estricta preferencia por Activos Líquidos Premier (Excluye divisas fiat, memes e ilíquidos)
             is_premier = book in self.PREMIER_LIQUID_PAIRS
             if is_premier:
-                score += 8.0
+                score += 15.0
                 reasons.append("Activo Líquido Premier")
-            elif category == "Alta Volatilidad":
-                score -= 15.0
-                reasons.append("Penalización: Meme de alto riesgo de stop loss")
+            else:
+                score -= 35.0
+                reasons.append("Excluido de auto-scalper (Falta de liquidez o spread amplio)")
 
             score = round(max(10.0, min(98.0, score)), 1)
 
-            if score >= 74.0:
+            if score >= 78.0:
                 signal = "STRONG_BUY"
                 signal_label = "SNIPER COMPRA FUERTE"
-            elif score >= 64.0:
+            elif score >= 70.0:
                 signal = "BUY"
                 signal_label = "OPORTUNIDAD ALTA"
-            elif score <= 38.0:
+            elif score <= 40.0:
                 signal = "SELL"
                 signal_label = "VENTA / SALIDA"
             else:

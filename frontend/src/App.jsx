@@ -434,11 +434,10 @@ export default function App() {
           <div>
             <div className="card-title" style={{ fontSize: '1.08rem' }}>
               <Layers size={20} color="#38bdf8" />
-              <span>Monitor Cuádruple: Los 4 Activos Manejados en Tiempo Real (Rotación Dinámica)</span>
+              <span>Monitor de Cartera: Activos Líderes Manejados en Tiempo Real</span>
             </div>
             <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 2 }}>
-              El algoritmo mantiene ocupados los 4 mejores slots combinando Cripto, Acciones de Wall Street, Futuros CME y Materias Primas/FX.
-              Si un activo pierde impulso o aparece una mejor oportunidad, lo rota en automático sin preguntar.
+              El algoritmo opera exclusivamente los 7 activos líderes de ultra-liquidez (BTC, ETH, SOL, XRP, NVDA, AAPL, NQ-FUT) con Take Profit asimétrico (+0.55%), Trailing Profit (+0.30%) y Stop Loss estricto (-0.35%).
             </div>
           </div>
         </div>
