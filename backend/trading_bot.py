@@ -18,10 +18,10 @@ class TradingBot:
         self.strategy: str = "ai_custom"
         self.book: str = "btc_mxn"
         self.trade_size_pct: float = 23.0  # Asignación controlada
-        self.take_profit_pct: float = 0.42  # Meta de Take Profit alcanzable
-        self.stop_loss_pct: float = 0.95    # SL con espacio para absorber spread y fluctuación normal
-        self.trailing_arm_pct: float = 0.18 # Activa candado de ganancia al tocar +0.18%
-        self.trailing_drop_pct: float = 0.05 # Asegura ganancia si retrocede desde su máximo
+        self.take_profit_pct: float = 0.40  # Meta de Take Profit alcanzable
+        self.stop_loss_pct: float = 0.38    # SL estricto máximo para ratio riesgo/beneficio asimétrico
+        self.trailing_arm_pct: float = 0.16 # Activa candado de ganancia al tocar +0.16%
+        self.trailing_drop_pct: float = 0.04 # Asegura ganancia si retrocede desde su máximo
         self.min_hold_seconds: int = 150    # Periodo de maduración obligatorio (2.5 minutos anti-churn)
         self.cooldown_seconds: int = 15     # Segundos mínimos entre órdenes del bot
         self.last_trade_ts: float = 0.0

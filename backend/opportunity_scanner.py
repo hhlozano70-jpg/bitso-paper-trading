@@ -17,6 +17,59 @@ class OpportunityScanner:
         {"symbol": "MANA", "name": "Decentraland", "mxn_book": "mana_mxn", "usd_book": "mana_usd"},
     ]
 
+    PREMIER_LIQUID_PAIRS = {
+        "btc_mxn", "eth_mxn", "sol_mxn", "xrp_mxn",
+        "nvda_stk", "aapl_stk", "tsla_stk", "nq_fut", "es_fut", "usd_mxn"
+    }
+
+    @staticmethod
+    def detect_market_regimes(
+        tickers: Dict[str, Dict[str, Any]],
+        price_history_by_book: Dict[str, List[Dict[str, Any]]],
+    ) -> Dict[str, str]:
+        """
+        Detecta el régimen macro de mercado para filtrar operaciones contra-tendencia:
+          - crypto_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según BTC/MXN
+          - equities_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según NQ-FUT / ES-FUT
+        """
+        # 1. Régimen Cripto (Benchmark: BTC)
+        btc = tickers.get("btc_mxn")
+        crypto_regime = "NEUTRAL"
+        if btc:
+            btc_last = float(btc.get("last") or 0.0)
+            btc_vwap = float(btc.get("vwap") or btc_last)
+            btc_change = float(btc.get("change_24_pct") or 0.0)
+            btc_hist = price_history_by_book.get("btc_mxn", [])
+            btc_sma_diff = 0.0
+            if len(btc_hist) >= 4:
+                p_short = sum(p["price"] for p in btc_hist[-4:]) / 4
+                p_long = sum(p["price"] for p in btc_hist[-12:]) / min(12, len(btc_hist))
+                btc_sma_diff = (p_short - p_long) / p_long * 10000.0 if p_long > 0 else 0.0
+
+            if (btc_last >= btc_vwap * 0.999 or btc_change >= 0.3) and btc_sma_diff >= -0.8:
+                crypto_regime = "BULLISH"
+            elif (btc_last < btc_vwap * 0.995 or btc_change <= -1.2) and btc_sma_diff < -1.5:
+                crypto_regime = "BEARISH"
+            else:
+                crypto_regime = "NEUTRAL"
+
+        # 2. Régimen Bursátil (Benchmark: NQ-FUT / ES-FUT)
+        nq = tickers.get("nq_fut") or tickers.get("es_fut")
+        equities_regime = "NEUTRAL"
+        if nq:
+            nq_last = float(nq.get("last") or 0.0)
+            nq_vwap = float(nq.get("vwap") or nq_last)
+            nq_change = float(nq.get("change_24_pct") or 0.0)
+            if nq_last >= nq_vwap or nq_change >= 0.2:
+                equities_regime = "BULLISH"
+            elif nq_last < nq_vwap * 0.997 or nq_change <= -0.6:
+                equities_regime = "BEARISH"
+
+        return {
+            "crypto_regime": crypto_regime,
+            "equities_regime": equities_regime,
+        }
+
     @staticmethod
     def _compute_rsi(prices: List[float], fallback_range_pos: float) -> float:
         anchor = max(20.0, min(84.0, 26.0 + fallback_range_pos * 0.52))
@@ -78,28 +131,32 @@ class OpportunityScanner:
         friction_floor_pct = roundtrip_fee_pct + (spread_pct * 0.65)
 
         # 3. Volatilidad combinada y targets realistas
-        scalp_move_pct = max(tick_atr_pct * 2.2, volatility_24h_pct * 0.06)
+        scalp_move_pct = max(tick_atr_pct * 2.0, volatility_24h_pct * 0.05)
 
-        # Ajustar según categoría del activo (Take Profit con espacio neto sobre comisiones y spread)
+        # Ajustar según categoría del activo con estricta asimetría riesgo/beneficio
+        # El Stop Loss NUNCA debe ser mayor a 0.40% para evitar pérdidas acumuladas
         if category in ("Divisas & FX", "Oro & RWA"):
-            base_tp = max(0.18, min(0.40, friction_floor_pct + scalp_move_pct * 0.75))
-            base_sl = max(0.40, min(0.85, base_tp * 1.8))
+            base_tp = max(0.20, min(0.38, friction_floor_pct + scalp_move_pct * 0.75))
+            base_sl = max(0.24, min(0.34, base_tp * 0.85))
         elif category in ("Acciones", "Futuros"):
-            base_tp = max(0.24, min(0.65, friction_floor_pct + scalp_move_pct * 0.95))
-            base_sl = max(0.48, min(0.95, base_tp * 1.6))
+            base_tp = max(0.28, min(0.52, friction_floor_pct + scalp_move_pct * 0.90))
+            base_sl = max(0.26, min(0.36, base_tp * 0.85))
         elif category == "Alta Volatilidad":
-            base_tp = max(0.38, min(1.10, friction_floor_pct + scalp_move_pct * 1.25))
-            base_sl = max(0.70, min(1.60, base_tp * 1.5))
+            base_tp = max(0.35, min(0.65, friction_floor_pct + scalp_move_pct * 1.05))
+            base_sl = max(0.28, min(0.40, base_tp * 0.75))
         else:
             # Cripto MXN y Layer-1 / DeFi
-            base_tp = max(0.28, min(0.75, friction_floor_pct + scalp_move_pct * 1.05))
-            base_sl = max(0.55, min(1.25, base_tp * 1.65))
+            base_tp = max(0.30, min(0.58, friction_floor_pct + scalp_move_pct * 0.95))
+            base_sl = max(0.26, min(0.38, base_tp * 0.80))
 
+        # STOP LOSS MÁXIMO ESTRICTO: NUNCA SUPERAR 0.40%
+        base_sl = min(0.40, base_sl)
         auto_tp = round(base_tp, 2)
         auto_sl = round(base_sl, 2)
-        # Trailing Stop se activa al alcanzar el 45% del recorrido hacia el Take Profit
-        auto_trail_arm = round(max(0.12, auto_tp * 0.45), 2)
-        auto_trail_drop = round(max(0.04, auto_tp * 0.16), 2)
+
+        # Trailing Stop se activa al alcanzar el 40% del recorrido hacia el Take Profit (mínimo 0.14%)
+        auto_trail_arm = round(max(0.14, min(0.22, auto_tp * 0.40)), 2)
+        auto_trail_drop = round(max(0.04, auto_tp * 0.12), 2)
 
         return {
             "auto_tp_pct": auto_tp,
@@ -117,6 +174,9 @@ class OpportunityScanner:
         fee_rate: float = 0.0003,
     ) -> List[Dict[str, Any]]:
         opportunities: List[Dict[str, Any]] = []
+        regimes = self.detect_market_regimes(tickers, price_history_by_book)
+        crypto_regime = regimes.get("crypto_regime", "NEUTRAL")
+        equities_regime = regimes.get("equities_regime", "NEUTRAL")
 
         for book, tk in tickers.items():
             last = float(tk.get("last") or 0.0)
@@ -201,24 +261,62 @@ class OpportunityScanner:
                 reasons.append(f"RSI en zona de sobrecompra ({rsi_14:.1f})")
 
             # Filtro estricto de spread para asegurar que la comisión no coma la ganancia
-            if spread_bps <= 3.5:
+            if spread_bps <= 3.2:
                 score += 12.0
                 reasons.append(f"Spread mínimo ({spread_bps:.1f} bps)")
-            elif spread_bps <= 8.5:
+            elif spread_bps <= 5.5:
                 score += 6.0
-            elif spread_bps > 15.0:
-                score -= min(30.0, (spread_bps - 12.0) * 1.5)
-                reasons.append(f"Spread costoso ({spread_bps:.1f} bps penalizado)")
+            elif spread_bps <= 8.0:
+                score -= 12.0
+                reasons.append(f"Spread moderado ({spread_bps:.1f} bps penalizado)")
+            else:
+                score -= min(45.0, 20.0 + (spread_bps - 8.0) * 3.0)
+                reasons.append(f"Spread alto ({spread_bps:.1f} bps bloqueado)")
+
+            # Filtro 1: Alineación con Régimen Macro (Evitar comprar contra tendencia general)
+            is_crypto = category in ("Cripto MXN", "Layer-1 & DeFi", "Alta Volatilidad")
+            is_equity_futures = category in ("Acciones", "Futuros")
+            macro_status = "Alineado"
+
+            if is_crypto:
+                if crypto_regime == "BEARISH":
+                    if book != "btc_mxn":
+                        score -= 26.0
+                        macro_status = "BTC Bajista (Bloqueado)"
+                        reasons.append("Filtro Macro: BTC en tendencia bajista (altcoin bloqueada)")
+                    else:
+                        score -= 12.0
+                        macro_status = "BTC en Caída"
+                elif crypto_regime == "BULLISH":
+                    score += 6.0
+                    macro_status = "Cripto Alcista"
+            elif is_equity_futures:
+                if equities_regime == "BEARISH":
+                    score -= 24.0
+                    macro_status = "NQ/ES Bajista (Bloqueado)"
+                    reasons.append("Filtro Macro: Índices NQ/ES en tendencia bajista")
+                elif equities_regime == "BULLISH":
+                    score += 6.0
+                    macro_status = "Bolsa Alcista"
+
+            # Filtro 2: Preferencia por Activos Líquidos Premier vs Memes
+            is_premier = book in self.PREMIER_LIQUID_PAIRS
+            if is_premier:
+                score += 8.0
+                reasons.append("Activo Líquido Premier")
+            elif category == "Alta Volatilidad":
+                score -= 15.0
+                reasons.append("Penalización: Meme de alto riesgo de stop loss")
 
             score = round(max(10.0, min(98.0, score)), 1)
 
-            if score >= 72.0:
+            if score >= 74.0:
                 signal = "STRONG_BUY"
                 signal_label = "SNIPER COMPRA FUERTE"
-            elif score >= 62.0:
+            elif score >= 64.0:
                 signal = "BUY"
                 signal_label = "OPORTUNIDAD ALTA"
-            elif score <= 36.0:
+            elif score <= 38.0:
                 signal = "SELL"
                 signal_label = "VENTA / SALIDA"
             else:
@@ -240,6 +338,8 @@ class OpportunityScanner:
                 "pair": tk.get("pair", book),
                 "category": category,
                 "quote": tk.get("quote", "MXN"),
+                "is_premier": is_premier,
+                "macro_status": macro_status,
                 "last": last,
                 "last_native": tk.get("last_native", last),
                 "bid": tk.get("bid", last),

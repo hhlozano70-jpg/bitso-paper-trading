@@ -637,11 +637,39 @@ export default function App() {
                 return (
                   <tr key={opp.book}>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
                         <strong style={{ color: '#fff' }}>{opp.symbol}</strong>
                         <span style={{ fontSize: '0.72rem', color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
                           {opp.name}
                         </span>
+                        {opp.is_premier && (
+                          <span
+                            style={{
+                              fontSize: '0.62rem',
+                              padding: '1px 5px',
+                              borderRadius: 4,
+                              background: 'rgba(56,189,248,0.18)',
+                              color: '#38bdf8',
+                              fontWeight: 700,
+                            }}
+                          >
+                            PREMIER
+                          </span>
+                        )}
+                        {opp.macro_status && opp.macro_status !== 'Alineado' && (
+                          <span
+                            style={{
+                              fontSize: '0.62rem',
+                              padding: '1px 5px',
+                              borderRadius: 4,
+                              background: opp.macro_status.includes('Bloqueado') ? 'rgba(244,63,94,0.18)' : 'rgba(234,179,8,0.18)',
+                              color: opp.macro_status.includes('Bloqueado') ? '#f43f5e' : '#eab308',
+                              fontWeight: 700,
+                            }}
+                          >
+                            {opp.macro_status}
+                          </span>
+                        )}
                         {opp.has_position && (
                           <span
                             style={{

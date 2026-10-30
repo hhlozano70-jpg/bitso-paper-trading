@@ -300,12 +300,14 @@ async def run_bot_cycle(
 
             if bot.auto_tp_sl_by_coin:
                 tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or bot.take_profit_pct)
-                sl_target = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or bot.stop_loss_pct)
-                trail_arm = float(opp_info.get("auto_trail_arm_pct") or max(0.12, tp_target * 0.45))
-                trail_drop = float(opp_info.get("auto_trail_drop_pct") or max(0.04, tp_target * 0.16))
+                raw_sl = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or bot.stop_loss_pct)
+                # Pilar 2: Techo estricto de Stop Loss a máximo 0.40% para prevenir pérdidas profundas
+                sl_target = min(0.40, raw_sl)
+                trail_arm = float(opp_info.get("auto_trail_arm_pct") or max(0.14, min(0.22, tp_target * 0.40)))
+                trail_drop = float(opp_info.get("auto_trail_drop_pct") or max(0.04, tp_target * 0.12))
             else:
                 tp_target = bot.take_profit_pct
-                sl_target = bot.stop_loss_pct
+                sl_target = min(0.40, bot.stop_loss_pct)
                 trail_arm = bot.trailing_arm_pct
                 trail_drop = bot.trailing_drop_pct
 
@@ -322,19 +324,23 @@ async def run_bot_cycle(
                     f"(pico +{peak_pct:.2f}%)"
                 )
 
-            # 3. Breakeven Shield: Si ya tocó +0.18%, prohíbe que caiga a negativo
-            elif peak_pct >= 0.18 and unr_pct <= 0.02 and unr_pct >= -0.04:
+            # 3. Breakeven Shield Ágil: Si ya tocó +0.14%, asegura que no caiga a pérdidas (cierra en +0.02% min)
+            elif peak_pct >= 0.14 and unr_pct <= 0.03 and unr_pct >= -0.04:
                 exit_reason = f"[Breakeven Shield] {sym} protegido sin pérdidas (+{unr_pct:.2f}%)"
 
             # 4. Toma de ganancia temprana en verde si llega a resistencia clara
-            elif unr_pct >= 0.14 and asset_rsi >= 65.0 and hold_sec >= 40:
+            elif unr_pct >= 0.14 and asset_rsi >= 64.0 and hold_sec >= 35:
                 exit_reason = f"[Scalp Verde en Resistencia] {sym} cobró +{unr_pct:.2f}% al llegar a sobrecompra (RSI={asset_rsi:.1f})"
 
-            # 5. Stop Loss Estricto (corte defensivo final si el mercado cae)
-            elif unr_pct <= -sl_target:
-                exit_reason = f"[Stop Loss Controlado] {sym} cortó pérdida en {unr_pct:+.2f}% (SL: -{sl_target:.2f}%)"
+            # 5. Corte Preventivo Ágil: Si lleva más de 90s estancado en pérdidas (<= -0.22%) y con debilidad técnica
+            elif unr_pct <= -0.22 and hold_sec >= 90 and asset_rsi <= 42.0:
+                exit_reason = f"[Corte Preventivo Ágil] {sym} cortó pérdida temprano en {unr_pct:+.2f}% tras {hold_sec}s sin rebote (RSI={asset_rsi:.1f})"
 
-            # 6. Rotación por Oportunidad Superior: ESTRICTAMENTE PROHIBIDO VENDER EN ROJO/PÉRDIDA
+            # 6. Stop Loss Estricto Capped (corte defensivo final máximo a -0.40%)
+            elif unr_pct <= -sl_target:
+                exit_reason = f"[Stop Loss Controlado] {sym} cortó pérdida en {unr_pct:+.2f}% (SL Máx: -{sl_target:.2f}%)"
+
+            # 7. Rotación por Oportunidad Superior: ESTRICTAMENTE PROHIBIDO VENDER EN ROJO/PÉRDIDA
             # Solo se permite rotar si la posición ya está en VERDE (ganancia neta > 0) Y lleva más de 5 minutos
             elif (
                 unr_pct >= 0.08
@@ -363,7 +369,7 @@ async def run_bot_cycle(
                     bot.last_trade_ts = time.time()
                     last_executed_trade = res["trade"]
 
-        # B) Entradas Selectivas: Solo activos con confirmación de rebote y alta probabilidad
+        # B) Entradas Selectivas: Solo activos con confirmación de rebote, bajo spread y libro alcista
         portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
         positions = portfolio.get("positions", {})
         open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
@@ -376,15 +382,28 @@ async def run_bot_cycle(
                 for opp in opportunities_cache:
                     b = opp["book"]
                     already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
-                    # Filtros de entrada Sniper: Score >= 65, spread bajo <= 8.5 bps, y sin estar en sobrecompra (RSI <= 54)
+                    spread_bps = float(opp.get("spread_bps", 99.0))
+                    macro_status = str(opp.get("macro_status", ""))
+
+                    # 4 Pilares de Entrada:
+                    # 1. Sin posición previa
+                    # 2. Score >= 65
+                    # 3. Spread ultra-bajo <= 5.8 bps (evita activos costosos como DOGE/NGAS)
+                    # 4. Macro trend alineado (no bloqueado por caída de BTC o Nasdaq)
+                    # 5. Sin estar en sobrecompra (RSI <= 52)
                     if (
                         not already_held
                         and opp["opportunity_score"] >= 65.0
-                        and float(opp.get("spread_bps", 99.0)) <= 8.5
-                        and float(opp.get("rsi_14", 50.0)) <= 54.0
+                        and spread_bps <= 5.8
+                        and "Bloqueado" not in macro_status
+                        and float(opp.get("rsi_14", 50.0)) <= 52.0
                     ):
-                        chosen_opp = opp
-                        break
+                        # Pilar 3: Confirmación de Libro de Órdenes (Bid Imbalance >= 49%)
+                        ob = order_book_cache.get(b)
+                        imbalance = float(ob.get("imbalance", 0.52)) if ob else 0.52
+                        if imbalance >= 0.49:
+                            chosen_opp = opp
+                            break
 
             if chosen_opp:
                 b = chosen_opp["book"]
