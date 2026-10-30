@@ -5,6 +5,7 @@ __pycache__/
 venv/
 env/
 backend/portfolio_state.json
+backend/trades_history.db
 
 # Node
 node_modules/

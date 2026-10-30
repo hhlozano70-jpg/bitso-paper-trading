@@ -21,6 +21,8 @@ import {
   Flame,
   Scale,
   Layers,
+  Download,
+  PieChart,
 } from 'lucide-react'
 
 const isLocalVite =
@@ -60,7 +62,7 @@ const fmtNum = (val, decimals = 6) => {
 function InteractiveChart({ data, mode, activeMeta }) {
   const [hoverIdx, setHoverIdx] = useState(null)
   const width = 820
-  const height = 275
+  const height = 270
   const padLeft = 68
   const padRight = 18
   const padTop = 20
@@ -76,7 +78,7 @@ function InteractiveChart({ data, mode, activeMeta }) {
 
   if (chartPoints.length < 2) {
     return (
-      <div style={{ height: 275, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
+      <div style={{ height: 270, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
         Cargando historial de transacciones reales de Bitso...
       </div>
     )
@@ -286,9 +288,9 @@ export default function App() {
   const [state, setState] = useState(null)
   const [wsConnected, setWsConnected] = useState(false)
   const [chartMode, setChartMode] = useState('price')
-  const [scannerFilter, setScannerFilter] = useState('TOP_BUY') // TOP_BUY | ALL | Cripto MXN | Oro & RWA | Divisas & FX | Layer-1 & DeFi | Alta Volatilidad | ARBITRAGE | POSITIONS
+  const [scannerFilter, setScannerFilter] = useState('TOP_BUY')
   const [orderSide, setOrderSide] = useState('BUY')
-  const [orderAmountMxn, setOrderAmountMxn] = useState('15000')
+  const [orderAmountMxn, setOrderAmountMxn] = useState('14000')
   const [orderCryptoQty, setOrderCryptoQty] = useState('')
   const [statusBanner, setStatusBanner] = useState(null)
   const [showAiCodeModal, setShowAiCodeModal] = useState(false)
@@ -331,12 +333,12 @@ export default function App() {
       }
       ws.onclose = () => {
         setWsConnected(false)
-        reconnectTimer = setTimeout(connectWs, 3000)
+        reconnectTimer = setTimeout(connectWs, 2500)
       }
       ws.onerror = () => ws.close()
     }
     connectWs()
-    const pollInterval = setInterval(fetchState, 4000)
+    const pollInterval = setInterval(fetchState, 3000)
     return () => {
       clearInterval(pollInterval)
       if (reconnectTimer) clearTimeout(reconnectTimer)
@@ -348,7 +350,7 @@ export default function App() {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <RefreshCw size={22} color="#10b981" />
-        <span style={{ fontWeight: 600 }}>Escaneando 24 mercados y activos en tiempo real desde Bitso...</span>
+        <span style={{ fontWeight: 600 }}>Iniciando Motor de Scalping Multi-Activo conectado a Bitso...</span>
       </div>
     )
   }
@@ -363,16 +365,32 @@ export default function App() {
   }
   const ticker = state.active_ticker || {}
   const portfolio = state.portfolio || {}
+  const pnlBalance = portfolio.pnl_balance || {
+    total_transactions: 0,
+    buy_transactions: 0,
+    sell_transactions: 0,
+    winning_count: 0,
+    losing_count: 0,
+    win_rate_pct: 0,
+    gross_profit_mxn: 0,
+    gross_loss_mxn: 0,
+    net_realized_pnl_mxn: 0,
+    avg_win_mxn: 0,
+    avg_loss_mxn: 0,
+    profit_factor: 0,
+    by_book: [],
+  }
   const activePos = portfolio.positions?.[activeBook] || {
     amount: 0,
     avg_buy_price: 0,
     market_value_mxn: 0,
     unrealized_pnl_mxn: 0,
     unrealized_pnl_pct: 0,
+    auto_tp_pct: 0.35,
+    auto_sl_pct: 0.65,
   }
   const bot = state.bot || {}
   const lastSignal = bot.last_signal || {}
-  const features = lastSignal.features || {}
   const orderBook = state.order_book || { bids: [], asks: [], imbalance: 0.5 }
   const opportunities = state.opportunities || []
   const arbitrage = state.arbitrage || []
@@ -380,7 +398,7 @@ export default function App() {
   const openPositionsList = Object.values(portfolio.positions || {}).filter((p) => p.amount > 1e-8)
 
   const filteredOpportunities = opportunities.filter((opp) => {
-    if (scannerFilter === 'TOP_BUY') return opp.opportunity_score >= 58
+    if (scannerFilter === 'TOP_BUY') return opp.opportunity_score >= 56
     if (scannerFilter === 'ALL') return true
     if (scannerFilter === 'POSITIONS') return opp.has_position
     return opp.category === scannerFilter
@@ -510,12 +528,12 @@ export default function App() {
       const res = await fetch(`${API_BASE}/api/portfolio/reset`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initial_cash_mxn: 100000, fee_rate: portfolio.fee_rate ?? 0.0015 }),
+        body: JSON.stringify({ initial_cash_mxn: 100000, fee_rate: 0.0003, clear_history: true }),
       })
       if (res.ok) {
         const data = await res.json()
         setState(data)
-        showToast('info', 'Portafolio virtual reiniciado a $100,000.00 MXN')
+        showToast('info', 'Portafolio y balance reiniciados a $100,000.00 MXN')
       }
     } finally {
       setBusy(false)
@@ -537,6 +555,12 @@ export default function App() {
     0.001
   )
 
+  const totalGrossAbs = Math.max(
+    0.01,
+    pnlBalance.gross_profit_mxn + Math.abs(pnlBalance.gross_loss_mxn)
+  )
+  const profitSharePct = Math.round((pnlBalance.gross_profit_mxn / totalGrossAbs) * 100)
+
   return (
     <div className="app-shell">
       {/* TOP BAR */}
@@ -545,41 +569,46 @@ export default function App() {
           <div className="brand-logo mono">B⚡</div>
           <div>
             <div className="brand-title">
-              Bitso Multi-Asset Scanner & AI Paper Trader
+              Bitso High-Frequency Scalper & Auto TP/SL por Moneda
               <span className="badge-live">
                 <span className="pulse-dot" />
-                24 ACTIVOS EN VIVO • FX USD/MXN: ${state.usd_mxn_rate}
+                SCALPING 24/7 • 24 ACTIVOS • FX USD/MXN: ${state.usd_mxn_rate}
               </span>
             </div>
             <div style={{ fontSize: '0.77rem', color: '#94a3b8' }}>
-              Detectando oportunidades en Cripto MXN, Oro Físico (PAXG), RWA (ONDO), Divisas (USD/EUR), DeFi y Arbitraje
+              Take Profit y Stop Loss calculados dinámicamente por moneda según volatilidad de últimos ticks y spread real
             </div>
           </div>
         </div>
 
-        {/* Selector Rápido de Activo en Gráfico */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: '0.76rem', color: '#94a3b8', fontWeight: 600 }}>Activo en Terminal:</span>
           <select
             className="select-field mono"
-            style={{ width: 250, fontWeight: 700, borderColor: '#38bdf8' }}
+            style={{ width: 255, fontWeight: 700, borderColor: '#38bdf8' }}
             value={activeBook}
             onChange={(e) => handleSwitchBook(e.target.value)}
           >
             {opportunities.map((opp) => (
               <option key={opp.book} value={opp.book}>
-                [{opp.category}] {opp.symbol} ({opp.pair}) — Score: {opp.opportunity_score}
+                {opp.symbol} — TP +{opp.auto_tp_pct}% / SL -{opp.auto_sl_pct}% (Score {opp.opportunity_score})
               </option>
             ))}
           </select>
 
-          <button className="btn btn-secondary" onClick={() => setShowAiCodeModal((v) => !v)}>
-            <Code2 size={15} color="#a855f7" />
-            {showAiCodeModal ? 'Ocultar Guía IA' : 'Conectar tu IA'}
-          </button>
+          <a
+            href={`${API_BASE}/api/trades/export`}
+            target="_blank"
+            rel="noreferrer"
+            className="btn btn-secondary"
+            style={{ textDecoration: 'none' }}
+          >
+            <Download size={14} color="#10b981" />
+            Exportar Historial CSV
+          </a>
+
           <button className="btn btn-secondary" onClick={handleResetPortfolio} disabled={busy}>
             <RefreshCw size={14} />
-            Reiniciar $100k MXN
+            Reiniciar $100k
           </button>
         </div>
       </header>
@@ -633,93 +662,200 @@ export default function App() {
               {fmtMXN(portfolio.total_return_mxn)} ({portfolio.total_return_pct >= 0 ? '+' : ''}
               {portfolio.total_return_pct}%)
             </span>
-            <span>vs inicial {fmtMXN(portfolio.initial_cash_mxn, 0)}</span>
+            <span>Efectivo: {fmtMXN(portfolio.cash_mxn, 0)}</span>
           </div>
         </div>
 
         <div className="card kpi-card">
           <div className="kpi-label">
-            <span>Efectivo Disponible (MXN Virtual)</span>
-            <Activity size={16} color="#10b981" />
+            <span>Ganancias Brutas Acumuladas</span>
+            <TrendingUp size={16} color="#10b981" />
           </div>
-          <div className="kpi-value mono">{fmtMXN(portfolio.cash_mxn)}</div>
-          <div className="kpi-sub">
-            <span>Invertido en {openPositionsList.length} activos: {fmtMXN(portfolio.holdings_value_mxn)}</span>
-          </div>
-        </div>
-
-        <div className="card kpi-card">
-          <div className="kpi-label">
-            <span>Mejor Oportunidad Ahora (#1 Radar)</span>
-            <Flame size={16} color="#f59e0b" />
-          </div>
-          {top3Opportunities[0] ? (
-            <>
-              <div className="kpi-value mono" style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ color: '#10b981' }}>{top3Opportunities[0].symbol}</span>
-                <span style={{ fontSize: '1.05rem', color: '#f3f6fc' }}>
-                  Score {top3Opportunities[0].opportunity_score}/100
-                </span>
-              </div>
-              <div className="kpi-sub">
-                <span className="pos-pill up">{top3Opportunities[0].setup_type}</span>
-                <span>VWAP: {top3Opportunities[0].vwap_diff_pct}%</span>
-              </div>
-            </>
-          ) : (
-            <div className="kpi-value">Escaneando...</div>
-          )}
-        </div>
-
-        <div className="card kpi-card">
-          <div className="kpi-label">
-            <span>PnL Cerrado & Win Rate</span>
-            <Award size={16} color="#a855f7" />
-          </div>
-          <div className="kpi-value mono" style={{ color: portfolio.realized_pnl_mxn >= 0 ? '#10b981' : '#f43f5e' }}>
-            {portfolio.realized_pnl_mxn >= 0 ? '+' : ''}
-            {fmtMXN(portfolio.realized_pnl_mxn)}
+          <div className="kpi-value mono" style={{ color: '#10b981' }}>
+            +{fmtMXN(pnlBalance.gross_profit_mxn)}
           </div>
           <div className="kpi-sub">
-            <span>Win Rate: {portfolio.win_rate_pct}%</span>
+            <span className="pos-pill up">{pnlBalance.winning_count} ventas ganadoras</span>
+            <span>Prom: +{fmtMXN(pnlBalance.avg_win_mxn)}</span>
+          </div>
+        </div>
+
+        <div className="card kpi-card">
+          <div className="kpi-label">
+            <span>Pérdidas Brutas Acumuladas</span>
+            <TrendingDown size={16} color="#f43f5e" />
+          </div>
+          <div className="kpi-value mono" style={{ color: '#f43f5e' }}>
+            {fmtMXN(pnlBalance.gross_loss_mxn)}
+          </div>
+          <div className="kpi-sub">
+            <span className="pos-pill down">{pnlBalance.losing_count} ventas con pérdida</span>
+            <span>Prom: {fmtMXN(pnlBalance.avg_loss_mxn)}</span>
+          </div>
+        </div>
+
+        <div className="card kpi-card">
+          <div className="kpi-label">
+            <span>Balance Neto (Ganancias vs Pérdidas)</span>
+            <Award size={16} color="#f59e0b" />
+          </div>
+          <div
+            className="kpi-value mono"
+            style={{ color: pnlBalance.net_realized_pnl_mxn >= 0 ? '#10b981' : '#f43f5e' }}
+          >
+            {pnlBalance.net_realized_pnl_mxn >= 0 ? '+' : ''}
+            {fmtMXN(pnlBalance.net_realized_pnl_mxn)}
+          </div>
+          <div className="kpi-sub">
+            <span>Win Rate: {pnlBalance.win_rate_pct}%</span>
             <span>•</span>
-            <span>Trades: {portfolio.total_trades}</span>
+            <span>Profit Factor: {pnlBalance.profit_factor}x</span>
             <span>•</span>
-            <span>PnL Abierto: {fmtMXN(portfolio.unrealized_pnl_mxn)}</span>
+            <span>Trades: {pnlBalance.total_transactions}</span>
           </div>
         </div>
       </section>
 
       {/* =====================================================================
-          RADAR CUANTITATIVO DE OPORTUNIDADES MULTI-ACTIVO (24 MONEDAS Y ACTIVOS)
+          PANEL DE BALANCE CONTABLE: GANANCIAS VS PÉRDIDAS POR MONEDA
+         ===================================================================== */}
+      <section className="card" style={{ borderColor: 'rgba(16,185,129,0.35)' }}>
+        <div className="card-header">
+          <div>
+            <div className="card-title">
+              <PieChart size={19} color="#10b981" />
+              <span>Balance Contable de Ganancias vs. Pérdidas y Desglose por Moneda (Historial Persistente)</span>
+            </div>
+            <div style={{ fontSize: '0.77rem', color: '#94a3b8', marginTop: 2 }}>
+              Comparativa en tiempo real de todas las transacciones cerradas ({pnlBalance.sell_transactions} cierres de{' '}
+              {pnlBalance.total_transactions} operaciones totales guardadas en base de datos)
+            </div>
+          </div>
+
+          <div className="mono" style={{ display: 'flex', gap: 16, fontSize: '0.82rem' }}>
+            <span style={{ color: '#10b981', fontWeight: 700 }}>
+              ▲ Ganancias: +{fmtMXN(pnlBalance.gross_profit_mxn)} ({pnlBalance.winning_count})
+            </span>
+            <span style={{ color: '#f43f5e', fontWeight: 700 }}>
+              ▼ Pérdidas: {fmtMXN(pnlBalance.gross_loss_mxn)} ({pnlBalance.losing_count})
+            </span>
+            <span
+              style={{
+                color: pnlBalance.net_realized_pnl_mxn >= 0 ? '#10b981' : '#f43f5e',
+                fontWeight: 800,
+              }}
+            >
+              = Neto Cerrado: {pnlBalance.net_realized_pnl_mxn >= 0 ? '+' : ''}
+              {fmtMXN(pnlBalance.net_realized_pnl_mxn)}
+            </span>
+          </div>
+        </div>
+
+        {/* Barra de proporción Ganancias vs Pérdidas */}
+        <div
+          style={{
+            height: 10,
+            borderRadius: 999,
+            background: '#f43f5e',
+            overflow: 'hidden',
+            marginBottom: 14,
+          }}
+        >
+          <div
+            style={{
+              width: `${pnlBalance.sell_transactions > 0 ? profitSharePct : 50}%`,
+              height: '100%',
+              background: '#10b981',
+              transition: 'width 0.35s ease',
+            }}
+          />
+        </div>
+
+        {pnlBalance.by_book && pnlBalance.by_book.length > 0 && (
+          <div className="table-wrap" style={{ maxHeight: 205 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Moneda / Activo</th>
+                  <th>Total Transacciones</th>
+                  <th>Compras / Ventas</th>
+                  <th>Ganadoras vs Perdedoras</th>
+                  <th>Win Rate</th>
+                  <th>Ganancia Bruta (+)</th>
+                  <th>Pérdida Bruta (-)</th>
+                  <th>Balance Neto Cerrado</th>
+                  <th>Volumen Operado (MXN)</th>
+                </tr>
+              </thead>
+              <tbody className="mono">
+                {pnlBalance.by_book.map((row) => {
+                  const meta = catalog[row.book] || { symbol: row.book.toUpperCase(), name: row.book }
+                  return (
+                    <tr key={row.book}>
+                      <td>
+                        <strong style={{ color: '#fff' }}>{meta.symbol}</strong>{' '}
+                        <span style={{ fontSize: '0.73rem', color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
+                          {meta.name}
+                        </span>
+                      </td>
+                      <td>{row.total_trades}</td>
+                      <td>
+                        {row.buys} C / {row.sells} V
+                      </td>
+                      <td>
+                        <span style={{ color: '#10b981' }}>{row.wins}G</span> /{' '}
+                        <span style={{ color: '#f43f5e' }}>{row.losses}P</span>
+                      </td>
+                      <td>{row.win_rate_pct}%</td>
+                      <td style={{ color: '#10b981', fontWeight: 600 }}>+{fmtMXN(row.gross_profit_mxn)}</td>
+                      <td style={{ color: '#f43f5e', fontWeight: 600 }}>{fmtMXN(row.gross_loss_mxn)}</td>
+                      <td
+                        style={{
+                          fontWeight: 800,
+                          color: row.net_pnl_mxn >= 0 ? '#10b981' : '#f43f5e',
+                        }}
+                      >
+                        {row.net_pnl_mxn >= 0 ? '+' : ''}
+                        {fmtMXN(row.net_pnl_mxn)}
+                      </td>
+                      <td style={{ color: '#94a3b8' }}>{fmtMXN(row.volume_mxn)}</td>
+                    </tr>
+                  )
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      {/* =====================================================================
+          RADAR MULTI-ACTIVO CON TAKE PROFIT Y STOP LOSS AUTOMATIZADOS POR MONEDA
          ===================================================================== */}
       <section className="card" style={{ borderColor: 'rgba(56,189,248,0.4)' }}>
         <div className="card-header">
           <div>
             <div className="card-title" style={{ fontSize: '1.04rem' }}>
               <Compass size={20} color="#38bdf8" />
-              <span>Radar Cuantitativo de Oportunidades Multi-Activo en Bitso (24 Monedas, Oro, RWA y Divisas)</span>
+              <span>Radar de Scalping con Take Profit y Stop Loss Automatizados por Moneda (24 Activos)</span>
             </div>
             <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 2 }}>
-              Clasificación en vivo por Descuento vs. VWAP Institucional, Posición en Canal 24h (Soporte/Rebote), RSI(14) y Liquidez Bid-Ask
+              Cada moneda calcula su propio Auto-TP %, Auto-SL % y Trailing Lock % en base a su volatilidad reciente de ticks y spread en Bitso
             </div>
           </div>
 
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
             <button
               className="btn btn-buy"
-              onClick={() =>
-                top3Opportunities[0] && handleStepBot(null, top3Opportunities[0].book)
-              }
+              onClick={() => top3Opportunities[0] && handleStepBot(null, top3Opportunities[0].book)}
               disabled={busy || !top3Opportunities[0]}
             >
               <Zap size={15} />
-              Operar #1 Oportunidad con Bot ({top3Opportunities[0]?.symbol})
+              Scalp Rápido en #1 ({top3Opportunities[0]?.symbol})
             </button>
           </div>
         </div>
 
-        {/* DESTACADOS TOP 3 OPORTUNIDADES */}
+        {/* DESTACADOS TOP 3 OPORTUNIDADES CON SU AUTO-TP Y AUTO-SL */}
         <div
           style={{
             display: 'grid',
@@ -760,39 +896,28 @@ export default function App() {
                   <strong style={{ fontSize: '0.96rem' }}>
                     {opp.name} ({opp.symbol})
                   </strong>
-                  <span
-                    style={{
-                      fontSize: '0.7rem',
-                      padding: '2px 7px',
-                      borderRadius: 999,
-                      background: 'rgba(56,189,248,0.14)',
-                      color: '#38bdf8',
-                    }}
-                  >
-                    {opp.category}
-                  </span>
                 </div>
                 <span className="mono" style={{ fontWeight: 800, color: '#10b981', fontSize: '0.95rem' }}>
                   Score {opp.opportunity_score}/100
                 </span>
               </div>
 
-              <div className="mono" style={{ fontSize: '0.82rem', display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+              <div className="mono" style={{ fontSize: '0.8rem', display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <span>
                   Precio: <strong>{fmtMXN(opp.last)}</strong>
                 </span>
-                <span style={{ color: opp.vwap_diff_pct <= 0 ? '#10b981' : '#f59e0b' }}>
-                  vs VWAP: <strong>{opp.vwap_diff_pct > 0 ? `+${opp.vwap_diff_pct}` : opp.vwap_diff_pct}%</strong>
+                <span style={{ color: '#10b981' }}>
+                  Auto-TP: <strong>+{opp.auto_tp_pct}%</strong>
                 </span>
-                <span>
-                  Rango 24h: <strong>{opp.range_pos_pct}%</strong>
+                <span style={{ color: '#38bdf8' }}>
+                  Trailing: <strong>+{opp.auto_trail_arm_pct}%</strong>
                 </span>
-                <span>
-                  RSI: <strong>{opp.rsi_14}</strong>
+                <span style={{ color: '#f43f5e' }}>
+                  Auto-SL: <strong>-{opp.auto_sl_pct}%</strong>
                 </span>
               </div>
 
-              <div style={{ fontSize: '0.77rem', color: '#cbd5e1' }}>
+              <div style={{ fontSize: '0.76rem', color: '#cbd5e1' }}>
                 <strong style={{ color: '#38bdf8' }}>{opp.setup_type}:</strong> {opp.rationale}
               </div>
 
@@ -802,7 +927,7 @@ export default function App() {
                   style={{ flex: 1, padding: '6px 10px', fontSize: '0.78rem' }}
                   onClick={() => handleSwitchBook(opp.book)}
                 >
-                  Analizar Gráfico
+                  Ver Gráfico
                 </button>
                 <button
                   className="btn btn-buy"
@@ -812,31 +937,31 @@ export default function App() {
                     handleQuickOrder(
                       opp.book,
                       'BUY',
-                      10000,
+                      12000,
                       null,
-                      `[Compra Radar Top #${idx + 1}] ${opp.setup_type} (Score ${opp.opportunity_score})`
+                      `[Scalp Manual Top #${idx + 1} | Auto-TP +${opp.auto_tp_pct}% / SL -${opp.auto_sl_pct}%] ${opp.setup_type}`
                     )
                   }
                 >
-                  Comprar $10,000 MXN
+                  Scalp $12,000 MXN
                 </button>
               </div>
             </div>
           ))}
         </div>
 
-        {/* PESTAÑAS DE FILTRO POR CATEGORÍA DE ACTIVO */}
+        {/* PESTAÑAS DE FILTRO */}
         <div className="book-tabs" style={{ marginBottom: 12 }}>
           {[
-            { id: 'TOP_BUY', label: '🔥 Top Oportunidades' },
+            { id: 'TOP_BUY', label: '🔥 Top Scalps' },
             { id: 'ALL', label: `🌐 Todos (${opportunities.length})` },
             { id: 'Cripto MXN', label: '🇲🇽 Cripto MXN' },
-            { id: 'Oro & RWA', label: '🪙 Oro Físico & RWA' },
-            { id: 'Divisas & FX', label: '💱 Divisas & Stablecoins' },
+            { id: 'Oro & RWA', label: '🪙 Oro & RWA' },
+            { id: 'Divisas & FX', label: '💱 Divisas & FX' },
             { id: 'Layer-1 & DeFi', label: '⚡ Layer-1 & DeFi' },
-            { id: 'Alta Volatilidad', label: '🚀 Memes & Volatilidad' },
-            { id: 'ARBITRAGE', label: '⚖️ Arbitraje MXN vs USD' },
-            { id: 'POSITIONS', label: `💼 Mis Posiciones (${openPositionsList.length})` },
+            { id: 'Alta Volatilidad', label: '🚀 Memes' },
+            { id: 'ARBITRAGE', label: '⚖️ Arbitraje MXN/USD' },
+            { id: 'POSITIONS', label: `💼 Posiciones Activas (${openPositionsList.length})` },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -848,7 +973,6 @@ export default function App() {
           ))}
         </div>
 
-        {/* TABLA DE ARBITRAJE TRIANGULAR O TABLA DE ESCÁNER MULTI-ACTIVO */}
         {scannerFilter === 'ARBITRAGE' ? (
           <div className="table-wrap">
             <table>
@@ -860,8 +984,7 @@ export default function App() {
                   <th>Tipo de Cambio Spot</th>
                   <th>Precio Implícito (USD × MXN)</th>
                   <th>Spread Arbitraje</th>
-                  <th>Diagnóstico de Paridad / Oportunidad</th>
-                  <th>Acción</th>
+                  <th>Diagnóstico de Paridad</th>
                 </tr>
               </thead>
               <tbody className="mono">
@@ -874,24 +997,10 @@ export default function App() {
                     <td>${a.usd_price.toLocaleString('en-US')} USD</td>
                     <td>{fmtMXN(a.usd_mxn_spot, 4)}</td>
                     <td>{fmtMXN(a.implied_mxn_price)}</td>
-                    <td
-                      style={{
-                        fontWeight: 700,
-                        color: a.abs_spread_bps >= 10 ? '#10b981' : '#38bdf8',
-                      }}
-                    >
+                    <td style={{ fontWeight: 700, color: a.abs_spread_bps >= 10 ? '#10b981' : '#38bdf8' }}>
                       {a.spread_bps > 0 ? `+${a.spread_bps}` : a.spread_bps} bps
                     </td>
                     <td style={{ fontFamily: 'Inter, sans-serif', color: '#e2e8f0' }}>{a.direction}</td>
-                    <td>
-                      <button
-                        className="btn btn-secondary"
-                        style={{ padding: '5px 10px', fontSize: '0.75rem' }}
-                        onClick={() => handleSwitchBook(a.recommended_book)}
-                      >
-                        Abrir {a.symbol}/MXN
-                      </button>
-                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -903,21 +1012,18 @@ export default function App() {
               <thead>
                 <tr>
                   <th>Activo</th>
-                  <th>Categoría</th>
-                  <th>Precio Actual (MXN)</th>
-                  <th>Cambio 24h</th>
+                  <th>Precio (MXN)</th>
                   <th>vs VWAP</th>
-                  <th>Posición Rango 24h</th>
                   <th>RSI(14)</th>
-                  <th>Score IA</th>
-                  <th>Señal & Setup Detectado</th>
+                  <th>Auto-TP / Trailing / Auto-SL (Por Moneda)</th>
+                  <th>Score</th>
+                  <th>Señal & Setup de Scalping</th>
                   <th>Acción Rápida</th>
                 </tr>
               </thead>
               <tbody className="mono">
                 {filteredOpportunities.map((opp) => {
-                  const isStrong = opp.signal === 'STRONG_BUY'
-                  const isBuy = opp.signal === 'BUY' || isStrong
+                  const isBuy = opp.signal === 'BUY' || opp.signal === 'STRONG_BUY'
                   const isSell = opp.signal === 'SELL'
                   return (
                     <tr
@@ -929,55 +1035,27 @@ export default function App() {
                       <td>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                           <strong style={{ color: '#fff' }}>{opp.symbol}</strong>
-                          <span style={{ fontSize: '0.73rem', color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
+                          <span style={{ fontSize: '0.72rem', color: '#94a3b8', fontFamily: 'Inter, sans-serif' }}>
                             {opp.name}
                           </span>
                           {opp.has_position && (
                             <span
                               style={{
-                                fontSize: '0.66rem',
+                                fontSize: '0.65rem',
                                 padding: '1px 5px',
                                 borderRadius: 4,
                                 background: 'rgba(168,85,247,0.25)',
                                 color: '#e9d5ff',
                               }}
                             >
-                              EN CARTERA
+                              ABIERTA
                             </span>
                           )}
                         </div>
                       </td>
-                      <td style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#94a3b8' }}>
-                        {opp.category}
-                      </td>
                       <td style={{ fontWeight: 700 }}>{fmtMXN(opp.last)}</td>
-                      <td style={{ color: opp.change_24_pct >= 0 ? '#10b981' : '#f43f5e', fontWeight: 600 }}>
-                        {opp.change_24_pct >= 0 ? `+${opp.change_24_pct}%` : `${opp.change_24_pct}%`}
-                      </td>
                       <td style={{ color: opp.vwap_diff_pct <= 0 ? '#10b981' : '#cbd5e1' }}>
                         {opp.vwap_diff_pct > 0 ? `+${opp.vwap_diff_pct}%` : `${opp.vwap_diff_pct}%`}
-                      </td>
-                      <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                          <div
-                            style={{
-                              width: 54,
-                              height: 6,
-                              background: '#1e293b',
-                              borderRadius: 99,
-                              overflow: 'hidden',
-                            }}
-                          >
-                            <div
-                              style={{
-                                width: `${opp.range_pos_pct}%`,
-                                height: '100%',
-                                background: opp.range_pos_pct < 35 ? '#10b981' : opp.range_pos_pct > 80 ? '#f59e0b' : '#38bdf8',
-                              }}
-                            />
-                          </div>
-                          <span style={{ fontSize: '0.73rem' }}>{opp.range_pos_pct}%</span>
-                        </div>
                       </td>
                       <td
                         style={{
@@ -986,6 +1064,13 @@ export default function App() {
                         }}
                       >
                         {opp.rsi_14}
+                      </td>
+                      <td>
+                        <span style={{ color: '#10b981', fontWeight: 700 }}>TP +{opp.auto_tp_pct}%</span>
+                        {' | '}
+                        <span style={{ color: '#38bdf8' }}>Trail +{opp.auto_trail_arm_pct}%</span>
+                        {' | '}
+                        <span style={{ color: '#f43f5e' }}>SL -{opp.auto_sl_pct}%</span>
                       </td>
                       <td>
                         <span
@@ -1004,41 +1089,41 @@ export default function App() {
                           {opp.opportunity_score}
                         </span>
                       </td>
-                      <td style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.76rem' }}>
+                      <td style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem' }}>
                         <div style={{ fontWeight: 700, color: isBuy ? '#10b981' : isSell ? '#f43f5e' : '#94a3b8' }}>
                           {opp.signal_label} — {opp.setup_type}
                         </div>
-                        <div style={{ color: '#94a3b8', fontSize: '0.72rem' }}>{opp.rationale}</div>
+                        <div style={{ color: '#94a3b8', fontSize: '0.71rem' }}>{opp.rationale}</div>
                       </td>
                       <td>
                         <div style={{ display: 'flex', gap: 6 }}>
                           <button
                             className="btn btn-secondary"
-                            style={{ padding: '4px 8px', fontSize: '0.73rem' }}
+                            style={{ padding: '4px 8px', fontSize: '0.72rem' }}
                             onClick={() => handleSwitchBook(opp.book)}
                           >
-                            Gráfico
+                            Ver
                           </button>
                           <button
                             className="btn btn-buy"
-                            style={{ padding: '4px 8px', fontSize: '0.73rem' }}
+                            style={{ padding: '4px 8px', fontSize: '0.72rem' }}
                             disabled={busy}
                             onClick={() =>
                               handleQuickOrder(
                                 opp.book,
                                 'BUY',
-                                10000,
+                                12000,
                                 null,
-                                `[Radar Multi-Activo] ${opp.setup_type} (Score ${opp.opportunity_score})`
+                                `[Scalp Radar | Auto-TP +${opp.auto_tp_pct}% / SL -${opp.auto_sl_pct}%] ${opp.setup_type}`
                               )
                             }
                           >
-                            +$10k
+                            +$12k
                           </button>
                           {opp.has_position && (
                             <button
                               className="btn btn-sell"
-                              style={{ padding: '4px 8px', fontSize: '0.73rem' }}
+                              style={{ padding: '4px 8px', fontSize: '0.72rem' }}
                               disabled={busy}
                               onClick={() =>
                                 handleQuickOrder(
@@ -1046,11 +1131,11 @@ export default function App() {
                                   'SELL',
                                   null,
                                   opp.held_amount,
-                                  `[Cierre desde Radar] Liquidación total de ${opp.symbol}`
+                                  `[Cierre Manual Radar] Liquidación total de ${opp.symbol}`
                                 )
                               }
                             >
-                              Vender
+                              Cerrar
                             </button>
                           )}
                         </div>
@@ -1064,7 +1149,7 @@ export default function App() {
         )}
       </section>
 
-      {/* WORKSPACE DETALLADO DEL ACTIVO SELECCIONADO + BOT IA */}
+      {/* WORKSPACE DETALLADO */}
       <div className="workspace-grid">
         <div className="left-col">
           {/* GRÁFICO EN TIEMPO REAL */}
@@ -1074,7 +1159,8 @@ export default function App() {
                 <div className="card-title">
                   <BarChart2 size={18} color="#38bdf8" />
                   <span>
-                    {bookMeta.name} ({bookMeta.pair}) — Categoría: {bookMeta.category}
+                    {bookMeta.name} ({bookMeta.pair}) — Auto-TP +{activePos.auto_tp_pct}% / Auto-SL -
+                    {activePos.auto_sl_pct}%
                   </span>
                   <span className="mono" style={{ color: '#38bdf8', marginLeft: 6 }}>
                     {fmtMXN(ticker.last)}
@@ -1110,105 +1196,25 @@ export default function App() {
             />
           </div>
 
-          {/* ORDER BOOK EN VIVO */}
-          <div className="card">
-            <div className="card-header">
-              <div className="card-title">
-                <BookOpen size={17} color="#10b981" />
-                <span>Libro de Órdenes Real de Bitso ({bookMeta.pair}) & Presión de Liquidez</span>
-              </div>
-              <div className="mono" style={{ fontSize: '0.78rem' }}>
-                Bids: <strong style={{ color: '#10b981' }}>{((orderBook.imbalance || 0.5) * 100).toFixed(1)}%</strong>{' '}
-                | Asks:{' '}
-                <strong style={{ color: '#f43f5e' }}>{((1 - (orderBook.imbalance || 0.5)) * 100).toFixed(1)}%</strong>
-              </div>
-            </div>
-
-            <div
-              style={{
-                height: 8,
-                borderRadius: 999,
-                background: '#f43f5e',
-                overflow: 'hidden',
-                marginBottom: 14,
-              }}
-            >
-              <div
-                style={{
-                  width: `${((orderBook.imbalance || 0.5) * 100).toFixed(1)}%`,
-                  height: '100%',
-                  background: '#10b981',
-                  transition: 'width 0.35s ease',
-                }}
-              />
-            </div>
-
-            <div className="ob-grid mono">
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '0.72rem',
-                    color: '#94a3b8',
-                    marginBottom: 6,
-                  }}
-                >
-                  <span>CANTIDAD ({bookMeta.symbol})</span>
-                  <span>PRECIO COMPRA (BID MXN)</span>
-                </div>
-                {(orderBook.bids || []).slice(0, 6).map((b, idx) => (
-                  <div key={idx} className="ob-row">
-                    <div
-                      className="ob-bar-bid"
-                      style={{ width: `${Math.min(100, (b.amount / maxObVol) * 100)}%` }}
-                    />
-                    <span style={{ color: '#cbd5e1' }}>{fmtNum(b.amount, 4)}</span>
-                    <span style={{ color: '#10b981', fontWeight: 600 }}>{fmtMXN(b.price)}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    fontSize: '0.72rem',
-                    color: '#94a3b8',
-                    marginBottom: 6,
-                  }}
-                >
-                  <span>PRECIO VENTA (ASK MXN)</span>
-                  <span>CANTIDAD ({bookMeta.symbol})</span>
-                </div>
-                {(orderBook.asks || []).slice(0, 6).map((a, idx) => (
-                  <div key={idx} className="ob-row">
-                    <div
-                      className="ob-bar-ask"
-                      style={{ width: `${Math.min(100, (a.amount / maxObVol) * 100)}%` }}
-                    />
-                    <span style={{ color: '#f43f5e', fontWeight: 600 }}>{fmtMXN(a.price)}</span>
-                    <span style={{ color: '#cbd5e1' }}>{fmtNum(a.amount, 4)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* HISTORIAL DE OPERACIONES */}
+          {/* HISTORIAL DE OPERACIONES PERSISTENTE */}
           <div className="card">
             <div className="card-header">
               <div className="card-title">
                 <Activity size={17} color="#38bdf8" />
-                <span>Bitácora de Operaciones Ejecutadas (Multi-Activo + Bot IA)</span>
+                <span>Historial Completo de Transacciones Guardadas ({portfolio.total_trades || 0} registros)</span>
               </div>
-              <span style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
-                {portfolio.recent_trades?.length || 0} ejecuciones registradas
-              </span>
+              <a
+                href={`${API_BASE}/api/trades/export`}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-secondary"
+                style={{ padding: '5px 10px', fontSize: '0.75rem', textDecoration: 'none' }}
+              >
+                <Download size={13} color="#10b981" /> Descargar CSV
+              </a>
             </div>
 
-            <div className="table-wrap">
+            <div className="table-wrap" style={{ maxHeight: 380 }}>
               <table>
                 <thead>
                   <tr>
@@ -1219,15 +1225,15 @@ export default function App() {
                     <th>Precio (MXN)</th>
                     <th>Cantidad</th>
                     <th>Total MXN</th>
-                    <th>PnL Neto</th>
-                    <th>Motivo / Señal</th>
+                    <th>Ganancia / Pérdida</th>
+                    <th>Motivo / Meta TP-SL</th>
                   </tr>
                 </thead>
                 <tbody className="mono">
                   {(!portfolio.recent_trades || portfolio.recent_trades.length === 0) ? (
                     <tr>
                       <td colSpan={9} style={{ textAlign: 'center', padding: 24, color: '#64748b' }}>
-                        Sin operaciones aún. Haz clic en "+$10k" en cualquier activo del Radar o activa el Bot.
+                        Esperando primeras ejecuciones de Scalping...
                       </td>
                     </tr>
                   ) : (
@@ -1288,7 +1294,7 @@ export default function App() {
                               ? '—'
                               : `${t.pnl_mxn >= 0 ? '+' : ''}${fmtMXN(t.pnl_mxn)} (${t.pnl_pct >= 0 ? '+' : ''}${t.pnl_pct}%)`}
                           </td>
-                          <td style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.75rem', color: '#cbd5e1' }}>
+                          <td style={{ fontFamily: 'Inter, sans-serif', fontSize: '0.74rem', color: '#cbd5e1' }}>
                             {t.reason}
                           </td>
                         </tr>
@@ -1301,9 +1307,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* COLUMNA DERECHA: BOT CAZADOR MULTI-ACTIVO + CARTERA ABIERTA + ORDEN MANUAL */}
+        {/* COLUMNA DERECHA: BOT SCALPER + POSICIONES ABIERTAS CON METAS AUTO-TP/SL */}
         <div className="right-col">
-          {/* PANEL DEL BOT DE TRADING / IA */}
           <div
             className="card"
             style={{
@@ -1314,7 +1319,7 @@ export default function App() {
             <div className="card-header">
               <div className="card-title">
                 <Bot size={20} color={bot.enabled ? '#10b981' : '#a855f7'} />
-                <span>Bot Cazador Multi-Activo & IA</span>
+                <span>Motor Scalper de Alta Frecuencia</span>
                 <span
                   style={{
                     fontSize: '0.72rem',
@@ -1324,7 +1329,7 @@ export default function App() {
                     color: bot.enabled ? '#10b981' : '#94a3b8',
                   }}
                 >
-                  {bot.enabled ? 'ESCANEANDO Y OPERANDO' : 'EN PAUSA'}
+                  {bot.enabled ? 'ACTIVO (CICLO 2s)' : 'EN PAUSA'}
                 </span>
               </div>
 
@@ -1344,7 +1349,35 @@ export default function App() {
               </button>
             </div>
 
-            {/* Switch de Rotación Multi-Activo */}
+            {/* Switch 1: Auto TP/SL por moneda */}
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '9px 12px',
+                background: 'rgba(16,185,129,0.09)',
+                border: '1px solid rgba(16,185,129,0.28)',
+                borderRadius: 9,
+                marginBottom: 8,
+                fontSize: '0.8rem',
+              }}
+            >
+              <div>
+                <strong style={{ color: '#10b981' }}>TP y SL Automatizados por Moneda (Dinámico)</strong>
+                <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
+                  Ajusta el Take Profit, Trailing Lock y Stop Loss de cada activo según su volatilidad y spread actual
+                </div>
+              </div>
+              <input
+                type="checkbox"
+                checked={bot.auto_tp_sl_by_coin ?? true}
+                onChange={(e) => handleUpdateBot({ auto_tp_sl_by_coin: e.target.checked })}
+                style={{ width: 18, height: 18, accentColor: '#10b981', cursor: 'pointer' }}
+              />
+            </div>
+
+            {/* Switch 2: Modo Cazador Multi-Activo */}
             <div
               style={{
                 display: 'flex',
@@ -1359,144 +1392,68 @@ export default function App() {
               }}
             >
               <div>
-                <strong style={{ color: '#38bdf8' }}>Modo Cazador Multi-Activo (24 Monedas)</strong>
-                <div style={{ fontSize: '0.73rem', color: '#94a3b8' }}>
-                  Compra automáticamente las mejores oportunidades del Radar y cierra por Take Profit / Stop Loss
+                <strong style={{ color: '#38bdf8' }}>Escáner Multi-Activo de Alta Rotación (Hasta 6 Posiciones)</strong>
+                <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
+                  Opera automáticamente los mejores scalps cada {bot.cooldown_seconds || 6}s
                 </div>
               </div>
               <input
                 type="checkbox"
                 checked={bot.multi_asset_auto ?? true}
                 onChange={(e) => handleUpdateBot({ multi_asset_auto: e.target.checked })}
-                style={{ width: 18, height: 18, accentColor: '#10b981', cursor: 'pointer' }}
+                style={{ width: 18, height: 18, accentColor: '#38bdf8', cursor: 'pointer' }}
               />
             </div>
 
-            {/* Última Señal */}
-            <div
-              style={{
-                background: '#0b111e',
-                border: '1px solid rgba(255,255,255,0.08)',
-                borderRadius: 10,
-                padding: 12,
-                marginBottom: 14,
-              }}
-            >
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                <span style={{ fontSize: '0.75rem', color: '#94a3b8', fontWeight: 600 }}>
-                  ÚLTIMA DECISIÓN DEL BOT
-                </span>
-                <span
-                  className="mono"
-                  style={{
-                    padding: '2px 9px',
-                    borderRadius: 6,
-                    fontWeight: 700,
-                    fontSize: '0.78rem',
-                    background:
-                      lastSignal.action === 'BUY'
-                        ? 'rgba(16,185,129,0.2)'
-                        : lastSignal.action === 'SELL'
-                        ? 'rgba(244,63,94,0.2)'
-                        : 'rgba(148,163,184,0.15)',
-                    color:
-                      lastSignal.action === 'BUY'
-                        ? '#10b981'
-                        : lastSignal.action === 'SELL'
-                        ? '#f43f5e'
-                        : '#cbd5e1',
-                  }}
-                >
-                  {lastSignal.action || 'HOLD'} ({Math.round((lastSignal.confidence || 0.5) * 100)}% conf.)
-                </span>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div className="input-group">
+                <label className="input-label">% Cash por Operación</label>
+                <input
+                  type="number"
+                  className="input-field mono"
+                  min="5"
+                  max="50"
+                  step="1"
+                  value={bot.trade_size_pct ?? 14}
+                  onChange={(e) => handleUpdateBot({ trade_size_pct: parseFloat(e.target.value) || 14 })}
+                />
               </div>
-              <div style={{ fontSize: '0.81rem', color: '#e2e8f0' }}>{lastSignal.reason}</div>
+              <div className="input-group">
+                <label className="input-label">Frecuencia Disparo (Segundos)</label>
+                <input
+                  type="number"
+                  className="input-field mono"
+                  min="2"
+                  max="120"
+                  step="1"
+                  value={bot.cooldown_seconds ?? 6}
+                  onChange={(e) => handleUpdateBot({ cooldown_seconds: parseInt(e.target.value, 10) || 6 })}
+                />
+              </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-              <div className="input-group">
-                <label className="input-label">Algoritmo Base</label>
-                <select
-                  className="select-field"
-                  value={bot.strategy || 'sma_rsi'}
-                  onChange={(e) => handleUpdateBot({ strategy: e.target.value })}
-                >
-                  <option value="ai_custom">🧠 IA Multifactorial (predict_with_ai)</option>
-                  <option value="sma_rsi">📈 Cruce de Medias (SMA 5/18) + RSI (14)</option>
-                  <option value="orderbook_imbalance">⚡ Microestructura: Order Book Imbalance</option>
-                </select>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
-                <div className="input-group">
-                  <label className="input-label">% Cash / Orden</label>
-                  <input
-                    type="number"
-                    className="input-field mono"
-                    min="2"
-                    max="100"
-                    step="1"
-                    value={bot.trade_size_pct ?? 15}
-                    onChange={(e) => handleUpdateBot({ trade_size_pct: parseFloat(e.target.value) || 15 })}
-                  />
-                </div>
-                <div className="input-group">
-                  <label className="input-label">Take Profit (%)</label>
-                  <input
-                    type="number"
-                    className="input-field mono"
-                    min="0.05"
-                    max="25"
-                    step="0.05"
-                    value={bot.take_profit_pct ?? 0.45}
-                    onChange={(e) => handleUpdateBot({ take_profit_pct: parseFloat(e.target.value) || 0.45 })}
-                  />
-                </div>
-                <div className="input-group">
-                  <label className="input-label">Stop Loss (%)</label>
-                  <input
-                    type="number"
-                    className="input-field mono"
-                    min="0.05"
-                    max="25"
-                    step="0.05"
-                    value={bot.stop_loss_pct ?? 0.3}
-                    onChange={(e) => handleUpdateBot({ stop_loss_pct: parseFloat(e.target.value) || 0.3 })}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 4 }}>
-                <button
-                  className="btn btn-buy"
-                  onClick={() => handleStepBot(null, null)}
-                  disabled={busy}
-                >
-                  <Zap size={14} /> Cazar Mejor Oportunidad Ahora
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => handleStepBot('BUY', activeBook)}
-                  disabled={busy}
-                >
-                  <ArrowUpRight size={14} color="#10b981" /> Test Compra ({bookMeta.symbol})
-                </button>
-              </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 10 }}>
+              <button className="btn btn-buy" onClick={() => handleStepBot(null, null)} disabled={busy}>
+                <Zap size={14} /> Ejecutar Ciclo Scalper Ahora
+              </button>
+              <button className="btn btn-secondary" onClick={() => handleStepBot('BUY', activeBook)} disabled={busy}>
+                <ArrowUpRight size={14} color="#10b981" /> Comprar {bookMeta.symbol}
+              </button>
             </div>
           </div>
 
-          {/* RESUMEN DE POSICIONES ABIERTAS EN CARTERA */}
+          {/* POSICIONES ABIERTAS CON METAS AUTO-TP / TRAILING / AUTO-SL */}
           <div className="card">
             <div className="card-header">
               <div className="card-title">
                 <Layers size={18} color="#a855f7" />
-                <span>Posiciones Abiertas en Cartera ({openPositionsList.length})</span>
+                <span>Posiciones Abiertas & Metas Automatizadas ({openPositionsList.length}/6)</span>
               </div>
             </div>
 
             {openPositionsList.length === 0 ? (
               <div style={{ fontSize: '0.82rem', color: '#64748b', textAlign: 'center', padding: '14px 0' }}>
-                No tienes posiciones abiertas actualmente. Todo tu capital está en MXN líquido.
+                Sin posiciones abiertas en este segundo. El Scalper abrirá la siguiente oportunidad en automático.
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
@@ -1510,20 +1467,27 @@ export default function App() {
                         display: 'flex',
                         justifyContent: 'space-between',
                         alignItems: 'center',
-                        padding: '9px 11px',
+                        padding: '10px 12px',
                         background: '#0b111e',
                         borderRadius: 9,
                         border: '1px solid rgba(255,255,255,0.06)',
-                        fontSize: '0.78rem',
+                        fontSize: '0.77rem',
                       }}
                     >
                       <div>
-                        <strong style={{ color: '#fff', fontSize: '0.86rem' }}>{meta.symbol}</strong>{' '}
-                        <span style={{ color: '#94a3b8' }}>({fmtNum(pos.amount, 5)})</span>
-                        <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>
-                          Valuación: {fmtMXN(pos.market_value_mxn)}
+                        <div>
+                          <strong style={{ color: '#fff', fontSize: '0.88rem' }}>{meta.symbol}</strong>{' '}
+                          <span style={{ color: '#94a3b8' }}>({fmtMXN(pos.market_value_mxn)})</span>
+                        </div>
+                        <div style={{ fontSize: '0.71rem', marginTop: 3 }}>
+                          <span style={{ color: '#10b981' }}>Auto-TP: +{pos.auto_tp_pct}%</span>
+                          {' • '}
+                          <span style={{ color: '#38bdf8' }}>Trail: +{pos.auto_trail_arm_pct}%</span>
+                          {' • '}
+                          <span style={{ color: '#f43f5e' }}>Auto-SL: -{pos.auto_sl_pct}%</span>
                         </div>
                       </div>
+
                       <div style={{ textAlign: 'right' }}>
                         <div
                           style={{
@@ -1535,17 +1499,13 @@ export default function App() {
                           {fmtMXN(pos.unrealized_pnl_mxn)} ({pos.unrealized_pnl_pct >= 0 ? '+' : ''}
                           {pos.unrealized_pnl_pct}%)
                         </div>
+                        <div style={{ fontSize: '0.69rem', color: '#94a3b8' }}>
+                          Pico alcanzado: +{pos.peak_pnl_pct || 0}%
+                        </div>
                         <div style={{ display: 'flex', gap: 5, justifyContent: 'flex-end', marginTop: 4 }}>
                           <button
-                            className="btn btn-secondary"
-                            style={{ padding: '3px 7px', fontSize: '0.7rem' }}
-                            onClick={() => handleSwitchBook(pos.book)}
-                          >
-                            Ver
-                          </button>
-                          <button
                             className="btn btn-sell"
-                            style={{ padding: '3px 7px', fontSize: '0.7rem' }}
+                            style={{ padding: '3px 8px', fontSize: '0.7rem' }}
                             disabled={busy}
                             onClick={() =>
                               handleQuickOrder(
@@ -1553,11 +1513,11 @@ export default function App() {
                                 'SELL',
                                 null,
                                 pos.amount,
-                                `Liquidación manual de posición en ${meta.symbol}`
+                                `Toma manual de posición en ${meta.symbol}`
                               )
                             }
                           >
-                            Cerrar 100%
+                            Cobrar / Cerrar
                           </button>
                         </div>
                       </div>

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Set
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -29,6 +29,7 @@ class OrderRequest(BaseModel):
 class BotConfigRequest(BaseModel):
     enabled: Optional[bool] = None
     multi_asset_auto: Optional[bool] = None
+    auto_tp_sl_by_coin: Optional[bool] = None
     strategy: Optional[str] = None
     book: Optional[str] = None
     trade_size_pct: Optional[float] = None
@@ -39,7 +40,8 @@ class BotConfigRequest(BaseModel):
 
 class ResetPortfolioRequest(BaseModel):
     initial_cash_mxn: float = 100_000.0
-    fee_rate: float = 0.0015
+    fee_rate: float = 0.0003
+    clear_history: bool = True
 
 
 class SwitchBookRequest(BaseModel):
@@ -52,7 +54,7 @@ class ForceBotStepRequest(BaseModel):
 
 
 bitso = BitsoClient()
-engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0005)
+engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0003)
 bot = TradingBot()
 scanner = OpportunityScanner()
 
@@ -91,7 +93,6 @@ def _append_price_point(book: str, price: float, timestamp_label: Optional[str] 
 
 
 async def _seed_book_history(book: str) -> None:
-    """Puebla el gráfico inicial con transacciones reales recientes de Bitso."""
     trades = await bitso.get_recent_trades(book, limit=35)
     for t in trades:
         raw_ts = t.get("timestamp", "")
@@ -110,6 +111,7 @@ def _refresh_opportunities() -> None:
         tickers=tickers_cache,
         price_history_by_book=price_history_by_book,
         positions=portfolio_summary.get("positions", {}),
+        fee_rate=engine.fee_rate,
     )
     arbitrage_cache = scanner.scan_triangular_arbitrage(
         raw_by_book=raw_books_cache,
@@ -118,7 +120,8 @@ def _refresh_opportunities() -> None:
 
 
 def build_state_payload() -> Dict[str, Any]:
-    portfolio_summary = engine.get_summary(tickers_cache, active_book=active_book)
+    opp_by_book = {o["book"]: o for o in opportunities_cache}
+    portfolio_summary = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
     return {
         "active_book": active_book,
         "supported_books": SUPPORTED_BOOKS,
@@ -158,45 +161,62 @@ async def run_bot_cycle(
     target_book: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Ejecuta un ciclo del Bot:
-    - Si `bot.multi_asset_auto` está activo (y no se especificó un libro forzado), revisa primero
-      todas las posiciones abiertas para aplicar Take Profit / Stop Loss y luego busca la mejor
-      oportunidad entre los 24 activos del escáner.
-    - También evalúa siempre el libro activo para mostrar telemetría en vivo.
+    Motor de Scalping de Alta Frecuencia con TP y SL Automatizados por Moneda:
+    - Evalúa primero todas las posiciones abiertas contra su Take Profit / Stop Loss / Trailing Lock
+      dinámico específico de esa moneda (calculado con sus últimos ticks, volatilidad y spread).
+    - Si hay espacio en cartera (hasta 6 posiciones simultáneas), ejecuta compras rápidas en las
+      mejores oportunidades de alta liquidez.
     """
-    portfolio = engine.get_summary(tickers_cache, active_book=active_book)
+    opp_by_book = {o["book"]: o for o in opportunities_cache}
+    portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
     positions = portfolio.get("positions", {})
+    last_executed_trade = None
 
-    # 1. Si el modo Multi-Activo Automático está encendido, gestionar salidas y entradas globales
     if (bot.multi_asset_auto or target_book) and not force_trade_side:
-        # A) Revisar posiciones abiertas en cualquier moneda para:
-        #    1) Take Profit Rápido (+0.45%)
-        #    2) Trailing Profit Lock (asegura ganancia si subió >= +0.20% y retrocede 0.08%)
-        #    3) Toma de utilidad temprana por RSI alto en verde (>= +0.15% y RSI >= 64)
-        #    4) Stop Loss (-0.85%)
-        opp_by_book = {o["book"]: o for o in opportunities_cache}
-        for held_book, pos_data in positions.items():
+        # A) Revisar TODAS las posiciones abiertas para cobrar ganancias rápidas o cortar pérdidas
+        for held_book, pos_data in list(positions.items()):
             qty = float(pos_data.get("amount", 0.0))
             if qty <= 1e-8 or held_book not in tickers_cache:
                 continue
+
             unr_pct = float(pos_data.get("unrealized_pnl_pct", 0.0))
             peak_pct = float(pos_data.get("peak_pnl_pct", unr_pct))
-            asset_rsi = float(opp_by_book.get(held_book, {}).get("rsi_14", 50.0))
+            opp_info = opp_by_book.get(held_book, {})
+            asset_rsi = float(opp_info.get("rsi_14", 50.0))
+            sma_diff = float(opp_info.get("sma_diff_bps", 0.0))
+
+            # Usar TP y SL automatizados por moneda si está activo, o el global de respaldo
+            if bot.auto_tp_sl_by_coin:
+                tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or bot.take_profit_pct)
+                sl_target = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or bot.stop_loss_pct)
+                trail_arm = float(opp_info.get("auto_trail_arm_pct") or max(0.09, tp_target * 0.45))
+                trail_drop = float(opp_info.get("auto_trail_drop_pct") or max(0.04, tp_target * 0.20))
+            else:
+                tp_target = bot.take_profit_pct
+                sl_target = bot.stop_loss_pct
+                trail_arm = bot.trailing_arm_pct
+                trail_drop = bot.trailing_drop_pct
 
             exit_reason = None
-            if unr_pct >= bot.take_profit_pct:
-                exit_reason = f"[Take Profit Rápido] {held_book.upper()} aseguró +{unr_pct:.2f}% de ganancia"
-            elif peak_pct >= bot.trailing_arm_pct and (peak_pct - unr_pct) >= bot.trailing_drop_pct and unr_pct >= 0.06:
+            if unr_pct >= tp_target:
                 exit_reason = (
-                    f"[Trailing Profit Lock] {held_book.upper()} aseguró +{unr_pct:.2f}% "
-                    f"(tras tocar pico de +{peak_pct:.2f}%)"
+                    f"[Auto-TP {held_book.split('_')[0].upper()} +{tp_target:.2f}%] "
+                    f"Ganancia rápida cobrada en +{unr_pct:.2f}%"
                 )
-            elif unr_pct >= 0.14 and asset_rsi >= 64.0:
+            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.04:
                 exit_reason = (
-                    f"[Scalp Exit RSI={asset_rsi:.1f}] {held_book.upper()} cobró +{unr_pct:.2f}% en resistencia"
+                    f"[Trailing Scalp Lock] Aseguró +{unr_pct:.2f}% "
+                    f"(pico +{peak_pct:.2f}%, umbral +{trail_arm:.2f}%)"
                 )
-            elif unr_pct <= -bot.stop_loss_pct:
-                exit_reason = f"[Stop Loss Controlado] {held_book.upper()} cerró en {unr_pct:+.2f}%"
+            elif unr_pct >= 0.08 and (asset_rsi >= 60.0 or sma_diff < -1.0):
+                exit_reason = (
+                    f"[Scalp Rápido en Verde] Cobró +{unr_pct:.2f}% al frenarse impulso (RSI={asset_rsi:.1f})"
+                )
+            elif unr_pct <= -sl_target:
+                exit_reason = (
+                    f"[Auto-SL {held_book.split('_')[0].upper()} -{sl_target:.2f}%] "
+                    f"Cierre defensivo en {unr_pct:+.2f}%"
+                )
 
             if exit_reason:
                 res = engine.execute_order(
@@ -206,44 +226,48 @@ async def run_bot_cycle(
                     crypto_amount=qty,
                     source="BOT:SCALPER",
                     reason=exit_reason,
-                    confidence=0.95,
+                    confidence=0.96,
                 )
                 if res.get("success"):
                     bot.last_trade_ts = time.time()
-                    _refresh_opportunities()
-                    return {"signal": bot.last_signal, "executed_trade": res["trade"]}
+                    last_executed_trade = res["trade"]
 
-        # B) Seleccionar el mejor activo del radar si el cooldown terminó
+        if last_executed_trade and not force:
+            _refresh_opportunities()
+            return {"signal": bot.last_signal, "executed_trade": last_executed_trade}
+
+        # B) Seleccionar el mejor activo del radar para abrir nueva operación de Scalping
         elapsed = time.time() - bot.last_trade_ts
         open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
         total_eq = float(portfolio.get("total_equity_mxn", 100000.0))
-        has_cash_reserve = engine.cash_mxn >= (total_eq * 0.24)
+        has_cash_reserve = engine.cash_mxn >= (total_eq * 0.14)
 
-        if (force or elapsed >= bot.cooldown_seconds) and (force or (open_positions_count < 4 and has_cash_reserve)):
+        if (force or elapsed >= bot.cooldown_seconds) and (force or (open_positions_count < 6 and has_cash_reserve)):
             chosen_opp = None
             if target_book:
                 chosen_opp = next((o for o in opportunities_cache if o["book"] == target_book), None)
             elif opportunities_cache:
-                # Buscar la oportunidad #1 líquida (spread <= 16 bps), con rebote confirmado y sin posición duplicada
                 for opp in opportunities_cache:
                     b = opp["book"]
                     already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
                     if (
                         not already_held
-                        and opp["opportunity_score"] >= 60.0
-                        and float(opp.get("spread_bps", 99.0)) <= 16.0
-                        and float(opp.get("sma_diff_bps", 0.0)) >= -0.8
+                        and opp["opportunity_score"] >= 57.0
+                        and float(opp.get("spread_bps", 99.0)) <= 18.0
+                        and float(opp.get("sma_diff_bps", 0.0)) >= -1.2
                     ):
                         chosen_opp = opp
                         break
 
-            if chosen_opp and engine.cash_mxn >= 50.0:
+            if chosen_opp and engine.cash_mxn >= 100.0:
                 b = chosen_opp["book"]
                 mxn_to_spend = engine.cash_mxn * (bot.trade_size_pct / 100.0)
-                if mxn_to_spend >= 15.0 and b in tickers_cache:
+                if mxn_to_spend >= 50.0 and b in tickers_cache:
                     conf = round(min(0.98, chosen_opp["opportunity_score"] / 100.0), 2)
+                    auto_tp = chosen_opp["auto_tp_pct"]
+                    auto_sl = chosen_opp["auto_sl_pct"]
                     reason = (
-                        f"[Radar Multi-Activo Score {chosen_opp['opportunity_score']}/100] "
+                        f"[Scalp Score {chosen_opp['opportunity_score']} | Auto-TP +{auto_tp}% / SL -{auto_sl}%] "
                         f"{chosen_opp['setup_type']}: {chosen_opp['rationale']}"
                     )
                     res = engine.execute_order(
@@ -251,9 +275,11 @@ async def run_bot_cycle(
                         side="BUY",
                         ticker=tickers_cache[b],
                         mxn_amount=mxn_to_spend,
-                        source="BOT:RADAR",
+                        source="BOT:SCALPER",
                         reason=reason,
                         confidence=conf,
+                        auto_tp_pct=auto_tp,
+                        auto_sl_pct=auto_sl,
                     )
                     if res.get("success"):
                         bot.last_trade_ts = time.time()
@@ -261,7 +287,7 @@ async def run_bot_cycle(
                             "action": "BUY",
                             "confidence": conf,
                             "reason": reason,
-                            "strategy": "multi_asset_radar",
+                            "strategy": "multi_asset_scalper",
                             "timestamp": datetime.now().isoformat(),
                             "features": bot.extract_features(
                                 price_history_by_book.get(b, []),
@@ -274,7 +300,7 @@ async def run_bot_cycle(
                         _refresh_opportunities()
                         return {"signal": bot.last_signal, "executed_trade": res["trade"]}
 
-    # 2. Evaluación estándar sobre el libro seleccionado (`target_book` o `bot.book`)
+    # 2. Evaluación sobre el libro seleccionado
     book = target_book or bot.book
     ticker = tickers_cache.get(book) or await bitso.get_ticker(book)
     if not ticker:
@@ -307,6 +333,7 @@ async def run_bot_cycle(
     if action == "BUY":
         mxn_to_spend = engine.cash_mxn * (bot.trade_size_pct / 100.0)
         if mxn_to_spend >= 15.0:
+            opp_info = opp_by_book.get(book, {})
             res = engine.execute_order(
                 book=book,
                 side="BUY",
@@ -315,6 +342,8 @@ async def run_bot_cycle(
                 source=f"BOT:{bot.strategy.upper()}",
                 reason=reason,
                 confidence=signal["confidence"],
+                auto_tp_pct=opp_info.get("auto_tp_pct"),
+                auto_sl_pct=opp_info.get("auto_sl_pct"),
             )
             if res.get("success"):
                 bot.last_trade_ts = time.time()
@@ -340,7 +369,7 @@ async def run_bot_cycle(
 
 
 async def market_polling_loop() -> None:
-    """Bucle en segundo plano que consulta los 54 mercados de Bitso cada 3.5s y actualiza el Radar."""
+    """Bucle de alta frecuencia (cada 2.0 segundos) para Scalping rápido en 24 activos."""
     while True:
         try:
             snap = await bitso.get_all_tickers_snapshot()
@@ -350,12 +379,10 @@ async def market_polling_loop() -> None:
                 for b, tk in snap["tickers"].items():
                     _append_price_point(b, float(tk["last"]))
 
-            # Obtener Order Book del libro activo
             ob = await bitso.get_order_book(active_book, top_n=10)
             if ob["bids"] or ob["asks"]:
                 order_book_cache[active_book] = ob
 
-            # Actualizar escáner de oportunidades en las 24 monedas y activos
             _refresh_opportunities()
 
             if bot.enabled:
@@ -378,14 +405,10 @@ async def market_polling_loop() -> None:
         except Exception as exc:
             print(f"[MarketLoop] Error en ciclo: {exc}")
 
-        await asyncio.sleep(3.5)
+        await asyncio.sleep(2.0)
 
 
 async def keep_alive_loop() -> None:
-    """
-    Auto-ping preventivo cada 4 minutos cuando se despliega en Render.com
-    (Render inyecta automáticamente la variable RENDER_EXTERNAL_URL).
-    """
     target_url = os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("PUBLIC_URL")
     if not target_url:
         return
@@ -401,10 +424,10 @@ async def keep_alive_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Si se despliega en servidor 24/7 con AUTO_START_BOT=true, activar el bot al arrancar
     if os.environ.get("AUTO_START_BOT", "true").lower() in ("1", "true", "yes"):
         bot.enabled = True
         bot.multi_asset_auto = True
+        bot.auto_tp_sl_by_coin = True
 
     snap = await bitso.get_all_tickers_snapshot()
     tickers_cache.update(snap["tickers"])
@@ -425,9 +448,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Bitso Paper Trading & Multi-Asset Opportunity Scanner",
-    description="Simulador de trading y escáner cuantitativo de oportunidades en 24 monedas y activos de Bitso.",
-    version="2.0.0",
+    title="Bitso High-Frequency Scalping & Multi-Asset AI Scanner",
+    description="Simulador de Scalping con TP/SL automatizados por moneda y Balance Contable de Ganancias vs Pérdidas.",
+    version="3.0.0",
     lifespan=lifespan,
 )
 
@@ -462,6 +485,16 @@ async def get_opportunities() -> Dict[str, Any]:
     }
 
 
+@app.get("/api/trades/export")
+async def export_trades() -> Response:
+    csv_data = engine.export_trades_csv()
+    return Response(
+        content=csv_data,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=bitso_historial_transacciones.csv"},
+    )
+
+
 @app.post("/api/book")
 async def switch_book(req: SwitchBookRequest) -> Dict[str, Any]:
     global active_book
@@ -483,6 +516,7 @@ async def place_order(req: OrderRequest) -> Dict[str, Any]:
     if not ticker:
         raise HTTPException(status_code=503, detail="No se pudo obtener el precio actual de Bitso.")
 
+    opp_info = next((o for o in opportunities_cache if o["book"] == book), {})
     result = engine.execute_order(
         book=book,
         side=req.side,
@@ -491,6 +525,8 @@ async def place_order(req: OrderRequest) -> Dict[str, Any]:
         crypto_amount=req.crypto_amount,
         source="MANUAL",
         reason=req.reason or "Orden manual ejecutada por el usuario",
+        auto_tp_pct=opp_info.get("auto_tp_pct"),
+        auto_sl_pct=opp_info.get("auto_sl_pct"),
     )
     if not result.get("success"):
         raise HTTPException(status_code=400, detail=result.get("error", "Error al ejecutar orden"))
@@ -519,7 +555,7 @@ async def step_bot(req: ForceBotStepRequest) -> Dict[str, Any]:
 
 @app.post("/api/portfolio/reset")
 async def reset_portfolio(req: ResetPortfolioRequest) -> Dict[str, Any]:
-    engine.reset(initial_cash_mxn=req.initial_cash_mxn, fee_rate=req.fee_rate)
+    engine.reset(initial_cash_mxn=req.initial_cash_mxn, fee_rate=req.fee_rate, clear_history=req.clear_history)
     _refresh_opportunities()
     await broadcast_state()
     return build_state_payload()
@@ -527,13 +563,13 @@ async def reset_portfolio(req: ResetPortfolioRequest) -> Dict[str, Any]:
 
 @app.get("/api/health")
 async def health_check() -> Dict[str, Any]:
-    """Endpoint ligero para monitores 24/7 (UptimeRobot / Cron-job.org / Cloud Healthchecks)."""
     portfolio = engine.get_summary(tickers_cache, active_book=active_book)
     return {
         "status": "ok",
         "server_time": datetime.now().isoformat(),
         "bot_enabled": bot.enabled,
         "multi_asset_auto": bot.multi_asset_auto,
+        "auto_tp_sl_by_coin": bot.auto_tp_sl_by_coin,
         "total_equity_mxn": portfolio.get("total_equity_mxn"),
         "total_trades": portfolio.get("total_trades"),
         "monitored_assets": len(tickers_cache),
@@ -554,7 +590,6 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         ws_clients.discard(websocket)
 
 
-# Servir el Frontend compilado de React (frontend/dist) desde el mismo servidor FastAPI en producción
 FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 if os.path.isdir(FRONTEND_DIST):
     assets_dir = os.path.join(FRONTEND_DIST, "assets")
