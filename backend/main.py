@@ -52,7 +52,7 @@ class ForceBotStepRequest(BaseModel):
 
 
 bitso = BitsoClient()
-engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0008)
+engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0005)
 bot = TradingBot()
 scanner = OpportunityScanner()
 
@@ -169,21 +169,43 @@ async def run_bot_cycle(
 
     # 1. Si el modo Multi-Activo Automático está encendido, gestionar salidas y entradas globales
     if (bot.multi_asset_auto or target_book) and not force_trade_side:
-        # A) Revisar posiciones abiertas en cualquier moneda para Take Profit / Stop Loss
+        # A) Revisar posiciones abiertas en cualquier moneda para:
+        #    1) Take Profit Rápido (+0.45%)
+        #    2) Trailing Profit Lock (asegura ganancia si subió >= +0.20% y retrocede 0.08%)
+        #    3) Toma de utilidad temprana por RSI alto en verde (>= +0.15% y RSI >= 64)
+        #    4) Stop Loss (-0.85%)
+        opp_by_book = {o["book"]: o for o in opportunities_cache}
         for held_book, pos_data in positions.items():
             qty = float(pos_data.get("amount", 0.0))
             if qty <= 1e-8 or held_book not in tickers_cache:
                 continue
             unr_pct = float(pos_data.get("unrealized_pnl_pct", 0.0))
-            if unr_pct >= bot.take_profit_pct or unr_pct <= -bot.stop_loss_pct:
-                reason_tag = "Take Profit Multi-Activo" if unr_pct >= bot.take_profit_pct else "Stop Loss Multi-Activo"
+            peak_pct = float(pos_data.get("peak_pnl_pct", unr_pct))
+            asset_rsi = float(opp_by_book.get(held_book, {}).get("rsi_14", 50.0))
+
+            exit_reason = None
+            if unr_pct >= bot.take_profit_pct:
+                exit_reason = f"[Take Profit Rápido] {held_book.upper()} aseguró +{unr_pct:.2f}% de ganancia"
+            elif peak_pct >= bot.trailing_arm_pct and (peak_pct - unr_pct) >= bot.trailing_drop_pct and unr_pct >= 0.06:
+                exit_reason = (
+                    f"[Trailing Profit Lock] {held_book.upper()} aseguró +{unr_pct:.2f}% "
+                    f"(tras tocar pico de +{peak_pct:.2f}%)"
+                )
+            elif unr_pct >= 0.14 and asset_rsi >= 64.0:
+                exit_reason = (
+                    f"[Scalp Exit RSI={asset_rsi:.1f}] {held_book.upper()} cobró +{unr_pct:.2f}% en resistencia"
+                )
+            elif unr_pct <= -bot.stop_loss_pct:
+                exit_reason = f"[Stop Loss Controlado] {held_book.upper()} cerró en {unr_pct:+.2f}%"
+
+            if exit_reason:
                 res = engine.execute_order(
                     book=held_book,
                     side="SELL",
                     ticker=tickers_cache[held_book],
                     crypto_amount=qty,
-                    source=f"BOT:SCANNER",
-                    reason=f"[{reason_tag}] {held_book.upper()} cerró con {unr_pct:+.2f}%",
+                    source="BOT:SCALPER",
+                    reason=exit_reason,
                     confidence=0.95,
                 )
                 if res.get("success"):
@@ -193,17 +215,25 @@ async def run_bot_cycle(
 
         # B) Seleccionar el mejor activo del radar si el cooldown terminó
         elapsed = time.time() - bot.last_trade_ts
-        if force or elapsed >= bot.cooldown_seconds:
+        open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
+        total_eq = float(portfolio.get("total_equity_mxn", 100000.0))
+        has_cash_reserve = engine.cash_mxn >= (total_eq * 0.24)
+
+        if (force or elapsed >= bot.cooldown_seconds) and (force or (open_positions_count < 4 and has_cash_reserve)):
             chosen_opp = None
             if target_book:
                 chosen_opp = next((o for o in opportunities_cache if o["book"] == target_book), None)
             elif opportunities_cache:
-                # Buscar la oportunidad #1 con señal de compra que aún no tengamos sobreponderada
+                # Buscar la oportunidad #1 líquida (spread <= 16 bps), con rebote confirmado y sin posición duplicada
                 for opp in opportunities_cache:
                     b = opp["book"]
-                    held_val = float(positions.get(b, {}).get("market_value_mxn", 0.0))
-                    total_eq = float(portfolio.get("total_equity_mxn", 100000.0))
-                    if opp["opportunity_score"] >= 63.0 and (held_val / max(1.0, total_eq)) < 0.25:
+                    already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
+                    if (
+                        not already_held
+                        and opp["opportunity_score"] >= 60.0
+                        and float(opp.get("spread_bps", 99.0)) <= 16.0
+                        and float(opp.get("sma_diff_bps", 0.0)) >= -0.8
+                    ):
                         chosen_opp = opp
                         break
 

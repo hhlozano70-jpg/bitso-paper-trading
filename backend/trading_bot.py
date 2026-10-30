@@ -14,12 +14,14 @@ class TradingBot:
     def __init__(self) -> None:
         self.enabled: bool = False
         self.multi_asset_auto: bool = True  # Escanea las 24 monedas y opera las mejores oportunidades
-        self.strategy: str = "sma_rsi"  # "sma_rsi" | "orderbook_imbalance" | "ai_custom"
+        self.strategy: str = "ai_custom"  # "sma_rsi" | "orderbook_imbalance" | "ai_custom"
         self.book: str = "btc_mxn"
-        self.trade_size_pct: float = 15.0  # % del efectivo disponible por compra
-        self.take_profit_pct: float = 2.20  # % de ganancia neta para tomar utilidad
-        self.stop_loss_pct: float = 1.60    # % de pérdida máxima (mayor al spread + comisión para evitar cierres prematuros)
-        self.cooldown_seconds: int = 45     # Segundos mínimos entre operaciones del bot
+        self.trade_size_pct: float = 20.0  # % del efectivo disponible por compra (concentrado en top setups)
+        self.take_profit_pct: float = 0.45  # % de ganancia rápida objetivo (Scalping intradía)
+        self.stop_loss_pct: float = 0.85    # % de pérdida máxima controlada
+        self.trailing_arm_pct: float = 0.20 # Activa Trailing Stop al alcanzar +0.20% neto
+        self.trailing_drop_pct: float = 0.08 # Cierra asegurando ganancia si retrocede 0.08% desde su máximo
+        self.cooldown_seconds: int = 25     # Segundos mínimos entre operaciones del bot
         self.last_trade_ts: float = 0.0
         self.last_signal: Dict[str, Any] = {
             "action": "HOLD",

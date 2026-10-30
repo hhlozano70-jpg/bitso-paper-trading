@@ -14,10 +14,10 @@ class PaperTradingEngine:
     comisiones configurables y calculando PnL realizado y no realizado en tiempo real.
     """
 
-    def __init__(self, initial_cash_mxn: float = 100_000.0, fee_rate: float = 0.0008) -> None:
+    def __init__(self, initial_cash_mxn: float = 100_000.0, fee_rate: float = 0.0005) -> None:
         self.initial_cash_mxn = initial_cash_mxn
         self.cash_mxn = initial_cash_mxn
-        self.fee_rate = fee_rate  # 0.15% por defecto (ajustable en la UI)
+        self.fee_rate = fee_rate  # 0.05% modo scalping / maker (ajustable)
         self.positions: Dict[str, Dict[str, float]] = {}
         self.trades: List[Dict[str, Any]] = []
         self.equity_curve: List[Dict[str, Any]] = []
@@ -29,6 +29,7 @@ class PaperTradingEngine:
             self.positions[book] = {
                 "amount": 0.0,
                 "avg_buy_price": 0.0,
+                "peak_pnl_pct": 0.0,
                 "realized_pnl": 0.0,
                 "total_bought_mxn": 0.0,
                 "total_sold_mxn": 0.0,
@@ -124,6 +125,7 @@ class PaperTradingEngine:
             new_qty = prev_qty + qty
             pos["avg_buy_price"] = (prev_cost + gross_mxn) / new_qty if new_qty > 0 else 0.0
             pos["amount"] = new_qty
+            pos["peak_pnl_pct"] = 0.0
             pos["total_bought_mxn"] += gross_mxn
             self.cash_mxn -= gross_mxn
 
@@ -177,6 +179,7 @@ class PaperTradingEngine:
             if pos["amount"] < 1e-9:
                 pos["amount"] = 0.0
                 pos["avg_buy_price"] = 0.0
+                pos["peak_pnl_pct"] = 0.0
             pos["realized_pnl"] += realized_pnl
             pos["total_sold_mxn"] += net_mxn
             self.cash_mxn += net_mxn
@@ -218,6 +221,10 @@ class PaperTradingEngine:
             cost_basis = qty * avg_buy
             unr_pnl = (mkt_val * (1.0 - self.fee_rate) - cost_basis) if qty > 0 else 0.0
             unr_pnl_pct = (unr_pnl / cost_basis * 100.0) if cost_basis > 0 else 0.0
+            if qty > 0:
+                pos["peak_pnl_pct"] = max(float(pos.get("peak_pnl_pct", 0.0)), unr_pnl_pct)
+            else:
+                pos["peak_pnl_pct"] = 0.0
 
             holdings_value_mxn += mkt_val
             unrealized_pnl_total += unr_pnl
@@ -231,6 +238,7 @@ class PaperTradingEngine:
                 "market_value_mxn": round(mkt_val, 2),
                 "unrealized_pnl_mxn": round(unr_pnl, 2),
                 "unrealized_pnl_pct": round(unr_pnl_pct, 2),
+                "peak_pnl_pct": round(float(pos.get("peak_pnl_pct", 0.0)), 2),
                 "realized_pnl_mxn": round(pos.get("realized_pnl", 0.0), 2),
             }
 

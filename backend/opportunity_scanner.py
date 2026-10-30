@@ -79,64 +79,75 @@ class OpportunityScanner:
             rsi_14 = self._compute_rsi(prices, range_pos_pct)
 
             if len(prices) >= 3:
-                sma_short = sum(prices[-5:]) / len(prices[-5:])
-                sma_long = sum(prices[-18:]) / len(prices[-18:])
+                sma_short = sum(prices[-4:]) / len(prices[-4:])
+                sma_long = sum(prices[-15:]) / len(prices[-15:])
                 sma_diff_bps = ((sma_short - sma_long) / sma_long * 10000.0) if sma_long > 0 else 0.0
+                tick_bounce_bps = ((last - prices[-3]) / prices[-3] * 10000.0) if prices[-3] > 0 else 0.0
             else:
-                sma_diff_bps = round(-vwap_diff_pct * 8.0, 2)
+                sma_diff_bps = 0.0
+                tick_bounce_bps = 0.0
 
-            # Cálculo del Score Cuantitativo de Oportunidad (0 a 100)
+            # Cálculo del Score Cuantitativo de Oportunidad (0 a 100) — Calibrado para Ganancias Rápidas (Scalping)
             score = 50.0
             reasons: List[str] = []
             setup_type = "Seguimiento de Mercado"
 
-            # 1. Oportunidad por Descuento frente a VWAP institucional
-            if vwap_diff_pct <= -0.35:
-                bonus = min(18.0, abs(vwap_diff_pct) * 9.5)
-                score += bonus
-                setup_type = "Descuento bajo VWAP"
-                reasons.append(f"Cotiza {vwap_diff_pct:.2f}% bajo su VWAP institucional")
-            elif vwap_diff_pct >= 0.85 and change_24_pct > 2.0:
-                score += 10.0
-                setup_type = "Breakout Alcista con Volumen"
-                reasons.append(f"Fuerte impulso (+{change_24_pct:.2f}% 24h) superando VWAP")
+            # 1. Confirmación de Impulso de Corto Plazo (Evitar "atrapar cuchillos cayendo")
+            is_bouncing = sma_diff_bps >= -0.5 and tick_bounce_bps >= 0.0
 
-            # 2. Posición en el canal de 24h (Soporte / Sobreventa vs Resistencia)
-            if range_pos_pct <= 28.0:
-                support_bonus = (30.0 - range_pos_pct) * 0.65
+            if vwap_diff_pct <= -0.25 and is_bouncing:
+                bonus = min(16.0, abs(vwap_diff_pct) * 9.0)
+                score += bonus
+                setup_type = "Rebote Confirmado bajo VWAP"
+                reasons.append(f"Descuento {vwap_diff_pct:.2f}% vs VWAP con giro alcista")
+            elif vwap_diff_pct <= -0.50 and not is_bouncing:
+                # Si está cayendo sin freno, NO comprar todavía
+                score -= 8.0
+                setup_type = "En Caída (Esperando Piso)"
+                reasons.append(f"Bajo VWAP ({vwap_diff_pct:.2f}%) pero sin confirmación de rebote aún")
+            elif vwap_diff_pct >= 0.20 and sma_diff_bps > 1.5:
+                score += 12.0
+                setup_type = "Scalp de Impulso Alcista"
+                reasons.append(f"Micro-tendencia alcista (+{sma_diff_bps:.1f} bps SMA)")
+
+            # 2. Posición en el canal de 24h (Soporte con rebote vs Breakout)
+            if range_pos_pct <= 35.0 and is_bouncing:
+                support_bonus = (36.0 - range_pos_pct) * 0.50
                 score += support_bonus
-                if setup_type == "Descuento bajo VWAP":
-                    setup_type = "Doble Confluencia: Soporte 24h + Bajo VWAP"
+                if "VWAP" in setup_type:
+                    setup_type = "Scalp Doble Confluencia (Soporte + Rebote)"
                 else:
-                    setup_type = "Zona de Soporte 24h (Rebote)"
-                reasons.append(f"En piso del canal 24h ({range_pos_pct:.0f}% del rango)")
-            elif range_pos_pct >= 84.0 and change_24_pct > 1.5:
+                    setup_type = "Rebote en Soporte 24h"
+                reasons.append(f"Rebotando desde soporte ({range_pos_pct:.0f}% del rango 24h)")
+            elif range_pos_pct >= 75.0 and change_24_pct > 0.8 and is_bouncing:
                 score += 11.0
-                setup_type = "Momentum Breakout 24h"
-                reasons.append(f"Rompiendo techo de 24h ({range_pos_pct:.0f}% del rango)")
-            elif range_pos_pct >= 88.0 and change_24_pct <= 0.5:
-                score -= 14.0
-                setup_type = "Resistencia / Posible Toma de Utilidad"
-                reasons.append(f"Agotamiento cerca del máximo 24h ({range_pos_pct:.0f}%)")
+                setup_type = "Momentum Breakout Rápido"
+                reasons.append(f"Fuerza compradora ({change_24_pct:+.2f}% 24h)")
 
             # 3. RSI y Momentum de Corto Plazo
-            if rsi_14 <= 38.0:
-                score += (40.0 - rsi_14) * 0.7
-                reasons.append(f"RSI en sobreventa ({rsi_14:.1f})")
+            if 30.0 <= rsi_14 <= 46.0 and is_bouncing:
+                score += 10.0
+                reasons.append(f"RSI saliendo de sobreventa ({rsi_14:.1f})")
             elif rsi_14 >= 72.0:
-                score -= (rsi_14 - 70.0) * 0.8
+                score -= 12.0
                 reasons.append(f"RSI en sobrecompra ({rsi_14:.1f})")
 
-            if sma_diff_bps > 2.0:
-                score += min(8.0, sma_diff_bps * 0.8)
-                reasons.append(f"Cruce alcista SMA ({sma_diff_bps:+.1f} bps)")
+            if sma_diff_bps > 1.0:
+                score += min(10.0, sma_diff_bps * 1.4)
+                reasons.append(f"Aceleración SMA ({sma_diff_bps:+.1f} bps)")
+            elif sma_diff_bps < -3.0:
+                score -= 12.0
 
-            # 4. Penalización por Spread alto (iliquidez) o premio por liquidez institucional
-            if spread_bps <= 12.0:
+            # 4. Filtro Estricto de Spread para Ganancias Rápidas (Scalping requiere spread mínimo)
+            if spread_bps <= 4.0:
+                score += 9.0
+                reasons.append(f"Spread ultra bajo ({spread_bps:.1f} bps)")
+            elif spread_bps <= 12.0:
                 score += 5.0
-                reasons.append(f"Liquidez óptima (spread {spread_bps:.1f} bps)")
-            elif spread_bps > 45.0:
-                score -= min(18.0, (spread_bps - 40.0) * 0.25)
+                reasons.append(f"Liquidez rápida ({spread_bps:.1f} bps)")
+            elif spread_bps > 22.0:
+                score -= min(25.0, (spread_bps - 18.0) * 0.6)
+                reasons.append(f"Spread amplio ({spread_bps:.1f} bps penaliza scalping)")
 
             # Ajuste para activos de refugio (Oro PAXG / Divisas) cuando el mercado cripto cae
             if tk.get("category") in ("Oro & RWA", "Divisas & FX") and change_24_pct >= 0:
