@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: bitso-paper-trader-24-7
+    runtime: docker
+    plan: free
+    autoDeploy: true
+    healthCheckPath: /api/health
+    envVars:
+      - key: AUTO_START_BOT
+        value: "true"
+      - key: PORT
+        value: "8000"
