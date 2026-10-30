@@ -12,17 +12,18 @@ class TradingBot:
     """
 
     def __init__(self) -> None:
-        self.enabled: bool = False
-        self.multi_asset_auto: bool = True  # Escanea las 24 monedas y opera las mejores oportunidades
-        self.auto_tp_sl_by_coin: bool = True  # TP y SL dinámicos automatizados por moneda según últimos datos
-        self.strategy: str = "ai_custom"  # "sma_rsi" | "orderbook_imbalance" | "ai_custom"
+        self.enabled: bool = True
+        self.multi_asset_auto: bool = True  # Escanea las mejores oportunidades
+        self.auto_tp_sl_by_coin: bool = True  # TP y SL dinámicos automatizados
+        self.strategy: str = "ai_custom"
         self.book: str = "btc_mxn"
-        self.trade_size_pct: float = 14.0  # % del efectivo por entrada para alta rotación (hasta 6 posiciones)
-        self.take_profit_pct: float = 0.35  # Fallback si se desactiva auto_tp_sl_by_coin
-        self.stop_loss_pct: float = 0.65    # Fallback si se desactiva auto_tp_sl_by_coin
-        self.trailing_arm_pct: float = 0.14 # Activa Trailing Stop rápido
-        self.trailing_drop_pct: float = 0.05 # Cierra asegurando ganancia si retrocede desde su máximo
-        self.cooldown_seconds: int = 6      # Alta frecuencia de Scalping (6s entre disparos)
+        self.trade_size_pct: float = 23.0  # Asignación controlada
+        self.take_profit_pct: float = 0.42  # Meta de Take Profit alcanzable
+        self.stop_loss_pct: float = 0.95    # SL con espacio para absorber spread y fluctuación normal
+        self.trailing_arm_pct: float = 0.18 # Activa candado de ganancia al tocar +0.18%
+        self.trailing_drop_pct: float = 0.05 # Asegura ganancia si retrocede desde su máximo
+        self.min_hold_seconds: int = 150    # Periodo de maduración obligatorio (2.5 minutos anti-churn)
+        self.cooldown_seconds: int = 15     # Segundos mínimos entre órdenes del bot
         self.last_trade_ts: float = 0.0
         self.last_signal: Dict[str, Any] = {
             "action": "HOLD",

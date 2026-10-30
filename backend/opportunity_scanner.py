@@ -77,37 +77,29 @@ class OpportunityScanner:
         spread_pct = spread_bps / 100.0
         friction_floor_pct = roundtrip_fee_pct + (spread_pct * 0.65)
 
-        # 3. Volatilidad combinada de corto plazo para Scalping
-        scalp_move_pct = max(tick_atr_pct * 2.4, volatility_24h_pct * 0.065)
+        # 3. Volatilidad combinada y targets realistas
+        scalp_move_pct = max(tick_atr_pct * 2.2, volatility_24h_pct * 0.06)
 
-        # Ajustar según categoría del activo
+        # Ajustar según categoría del activo (Take Profit con espacio neto sobre comisiones y spread)
         if category in ("Divisas & FX", "Oro & RWA"):
-            base_tp = max(0.14, min(0.45, friction_floor_pct + scalp_move_pct * 0.8))
-            base_sl = max(0.28, min(0.75, base_tp * 1.45))
+            base_tp = max(0.18, min(0.40, friction_floor_pct + scalp_move_pct * 0.75))
+            base_sl = max(0.40, min(0.85, base_tp * 1.8))
         elif category in ("Acciones", "Futuros"):
-            # Acciones de Wall Street y Futuros CME tienen spreads ultra bajos (1.8-2.5 bps) ideales para Scalping
-            base_tp = max(0.18, min(0.65, friction_floor_pct + scalp_move_pct * 0.95))
-            base_sl = max(0.32, min(0.85, base_tp * 1.35))
+            base_tp = max(0.24, min(0.65, friction_floor_pct + scalp_move_pct * 0.95))
+            base_sl = max(0.48, min(0.95, base_tp * 1.6))
         elif category == "Alta Volatilidad":
-            base_tp = max(0.32, min(1.25, friction_floor_pct + scalp_move_pct * 1.35))
-            base_sl = max(0.55, min(1.50, base_tp * 1.30))
+            base_tp = max(0.38, min(1.10, friction_floor_pct + scalp_move_pct * 1.25))
+            base_sl = max(0.70, min(1.60, base_tp * 1.5))
         else:
             # Cripto MXN y Layer-1 / DeFi
-            base_tp = max(0.20, min(0.85, friction_floor_pct + scalp_move_pct * 1.10))
-            base_sl = max(0.40, min(1.15, base_tp * 1.35))
-
-        # Si la moneda está muy descontada bajo VWAP, hay mayor recorrido alcista potencial
-        if vwap_diff_pct < -0.8:
-            base_tp = min(1.20, base_tp * 1.15)
-        # Si el RSI ya está arriba de 58, hacer un scalp ultra rápido antes de que se agote
-        if rsi_14 >= 58.0:
-            base_tp = max(friction_floor_pct + 0.10, base_tp * 0.80)
+            base_tp = max(0.28, min(0.75, friction_floor_pct + scalp_move_pct * 1.05))
+            base_sl = max(0.55, min(1.25, base_tp * 1.65))
 
         auto_tp = round(base_tp, 2)
         auto_sl = round(base_sl, 2)
-        # Trailing Stop se activa al alcanzar el 48% del recorrido hacia el Take Profit
-        auto_trail_arm = round(max(0.09, auto_tp * 0.48), 2)
-        auto_trail_drop = round(max(0.04, auto_tp * 0.20), 2)
+        # Trailing Stop se activa al alcanzar el 45% del recorrido hacia el Take Profit
+        auto_trail_arm = round(max(0.12, auto_tp * 0.45), 2)
+        auto_trail_drop = round(max(0.04, auto_tp * 0.16), 2)
 
         return {
             "auto_tp_pct": auto_tp,
@@ -169,73 +161,66 @@ class OpportunityScanner:
                 fee_rate=fee_rate,
             )
 
-            # Score Cuantitativo para Scalping de Alta Frecuencia
-            score = 52.0
+            # Score Cuantitativo Sniper (Alta Probabilidad de Acierto para Evitar Pérdidas)
+            score = 50.0
             reasons: List[str] = []
-            setup_type = "Scalp de Liquidez"
+            setup_type = "Monitoreo"
 
-            is_bouncing = sma_diff_bps >= -1.2 and tick_bounce_bps >= -0.5
+            # Confirmación de giro alcista: SMA en aceleración positiva y precio reciente rebotando
+            is_bouncing = sma_diff_bps >= 0.1 and tick_bounce_bps >= 0.0
 
-            if vwap_diff_pct <= -0.18 and is_bouncing:
-                bonus = min(18.0, abs(vwap_diff_pct) * 10.0)
+            if vwap_diff_pct <= -0.15 and is_bouncing:
+                bonus = min(20.0, abs(vwap_diff_pct) * 12.0)
                 score += bonus
-                setup_type = "Scalp Rebote bajo VWAP"
-                reasons.append(f"Descuento {vwap_diff_pct:.2f}% vs VWAP")
-            elif vwap_diff_pct <= -0.60 and not is_bouncing:
-                score -= 6.0
-                setup_type = "Esperando Giro Alcista"
-                reasons.append(f"Bajo VWAP ({vwap_diff_pct:.2f}%), vigilando piso")
-            elif sma_diff_bps > 0.8:
-                score += 13.0
-                setup_type = "Scalp Micro-Tendencia Alcista"
-                reasons.append(f"Impulso alcista (+{sma_diff_bps:.1f} bps SMA)")
+                setup_type = "Rebote Confirmado en Descuento"
+                reasons.append(f"Giro alcista con descuento {vwap_diff_pct:.2f}% vs VWAP")
+            elif vwap_diff_pct <= -0.40 and not is_bouncing:
+                score -= 10.0
+                setup_type = "En Caída (Prohibido Comprar)"
+                reasons.append(f"Cayendo sin freno ({vwap_diff_pct:.2f}% bajo VWAP)")
+            elif sma_diff_bps >= 1.2 and is_bouncing:
+                score += 15.0
+                setup_type = "Impulso Alcista Confirmado"
+                reasons.append(f"Aceleración de corto plazo (+{sma_diff_bps:.1f} bps SMA)")
 
-            if range_pos_pct <= 40.0 and is_bouncing:
-                support_bonus = (42.0 - range_pos_pct) * 0.45
-                score += support_bonus
-                if "VWAP" in setup_type:
-                    setup_type = "Scalp Doble Confluencia"
-                else:
-                    setup_type = "Scalp en Soporte 24h"
-                reasons.append(f"Soporte 24h ({range_pos_pct:.0f}%)")
-            elif range_pos_pct >= 72.0 and change_24_pct > 0.4 and is_bouncing:
-                score += 11.0
-                setup_type = "Scalp Breakout Rápido"
-                reasons.append(f"Breakout (+{change_24_pct:+.2f}% 24h)")
-
-            if 28.0 <= rsi_14 <= 54.0 and is_bouncing:
-                score += 9.0
-                reasons.append(f"RSI óptimo ({rsi_14:.1f})")
-            elif rsi_14 >= 74.0:
-                score -= 12.0
-                reasons.append(f"RSI alto ({rsi_14:.1f})")
-
-            # Premio por spread estrecho para rotar rápido con ganancias
-            if spread_bps <= 5.0:
+            if range_pos_pct <= 38.0 and is_bouncing:
+                score += 12.0
+                setup_type = "Piso de 24h con Giro Alcista"
+                reasons.append(f"Rebote en soporte ({range_pos_pct:.0f}% rango)")
+            elif range_pos_pct >= 85.0 and change_24_pct > 0.6:
                 score += 10.0
-                reasons.append(f"Spread ultra bajo ({spread_bps:.1f} bps)")
-            elif spread_bps <= 14.0:
+                setup_type = "Breakout Fuerte"
+                reasons.append(f"Ruptura de máximos (+{change_24_pct:+.2f}%)")
+
+            # Ventana óptima de entrada: RSI entre 32 y 48 (sobreventa con giro)
+            if 30.0 <= rsi_14 <= 48.0 and is_bouncing:
+                score += 14.0
+                reasons.append(f"RSI en zona óptima de compra ({rsi_14:.1f})")
+            elif rsi_14 >= 65.0:
+                score -= 16.0
+                reasons.append(f"RSI en zona de sobrecompra ({rsi_14:.1f})")
+
+            # Filtro estricto de spread para asegurar que la comisión no coma la ganancia
+            if spread_bps <= 3.5:
+                score += 12.0
+                reasons.append(f"Spread mínimo ({spread_bps:.1f} bps)")
+            elif spread_bps <= 8.5:
                 score += 6.0
-                reasons.append(f"Spread líquido ({spread_bps:.1f} bps)")
-            elif spread_bps > 24.0:
-                score -= min(22.0, (spread_bps - 20.0) * 0.55)
+            elif spread_bps > 15.0:
+                score -= min(30.0, (spread_bps - 12.0) * 1.5)
+                reasons.append(f"Spread costoso ({spread_bps:.1f} bps penalizado)")
 
-            if category in ("Oro & RWA", "Divisas & FX") and change_24_pct >= 0:
-                score += 5.0
-                if setup_type == "Scalp de Liquidez":
-                    setup_type = "Scalp Refugio / FX"
+            score = round(max(10.0, min(98.0, score)), 1)
 
-            score = round(max(12.0, min(98.0, score)), 1)
-
-            if score >= 70.0:
+            if score >= 72.0:
                 signal = "STRONG_BUY"
-                signal_label = "SCALP COMPRA FUERTE"
-            elif score >= 58.0:
+                signal_label = "SNIPER COMPRA FUERTE"
+            elif score >= 62.0:
                 signal = "BUY"
-                signal_label = "SCALP COMPRA"
+                signal_label = "OPORTUNIDAD ALTA"
             elif score <= 36.0:
                 signal = "SELL"
-                signal_label = "TOMA UTILIDAD / VENTA"
+                signal_label = "VENTA / SALIDA"
             else:
                 signal = "NEUTRAL"
                 signal_label = "OBSERVAR"

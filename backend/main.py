@@ -283,7 +283,7 @@ async def run_bot_cycle(
             break
 
     if (bot.multi_asset_auto or target_book) and not force_trade_side:
-        # A) Evaluar salidas por Auto-TP, Trailing Lock, Auto-SL o Rotación por Comportamiento
+        # A) Evaluar salidas: Auto-TP, Breakeven Shield, Trailing Lock, Auto-SL y Rotación Protegida
         for held_book, pos_data in list(positions.items()):
             qty = float(pos_data.get("amount", 0.0))
             if qty <= 1e-8 or held_book not in tickers_cache:
@@ -295,14 +295,14 @@ async def run_bot_cycle(
             opp_info = opp_by_book.get(held_book, {})
             asset_rsi = float(opp_info.get("rsi_14", 50.0))
             sma_diff = float(opp_info.get("sma_diff_bps", 0.0))
-            current_score = float(opp_info.get("opportunity_score", 55.0))
+            current_score = float(opp_info.get("opportunity_score", 50.0))
             sym = ASSET_CATALOG.get(held_book, {}).get("symbol", held_book.upper())
 
             if bot.auto_tp_sl_by_coin:
                 tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or bot.take_profit_pct)
                 sl_target = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or bot.stop_loss_pct)
-                trail_arm = float(opp_info.get("auto_trail_arm_pct") or max(0.09, tp_target * 0.45))
-                trail_drop = float(opp_info.get("auto_trail_drop_pct") or max(0.04, tp_target * 0.20))
+                trail_arm = float(opp_info.get("auto_trail_arm_pct") or max(0.12, tp_target * 0.45))
+                trail_drop = float(opp_info.get("auto_trail_drop_pct") or max(0.04, tp_target * 0.16))
             else:
                 tp_target = bot.take_profit_pct
                 sl_target = bot.stop_loss_pct
@@ -310,31 +310,41 @@ async def run_bot_cycle(
                 trail_drop = bot.trailing_drop_pct
 
             exit_reason = None
+
+            # 1. Take Profit Principal
             if unr_pct >= tp_target:
-                exit_reason = f"[Auto-TP {sym} +{tp_target:.2f}%] Ganancia rápida cobrada en +{unr_pct:.2f}%"
-            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.03:
+                exit_reason = f"[Sniper TP Ganador] {sym} alcanzó meta de +{unr_pct:.2f}% (Target: +{tp_target:.2f}%)"
+
+            # 2. Trailing Profit Lock (Asegura cuando sube >= trail_arm)
+            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.05:
                 exit_reason = (
-                    f"[Trailing Scalp Lock {sym}] Aseguró +{unr_pct:.2f}% "
-                    f"(tras tocar pico de +{peak_pct:.2f}%)"
+                    f"[Trailing Profit Asegurado] {sym} aseguró +{unr_pct:.2f}% "
+                    f"(pico +{peak_pct:.2f}%)"
                 )
-            elif unr_pct >= 0.06 and (asset_rsi >= 60.0 or sma_diff < -0.6):
-                exit_reason = (
-                    f"[Cobro Rápido en Verde {sym}] Aseguró +{unr_pct:.2f}% al frenarse impulso (RSI={asset_rsi:.1f})"
-                )
+
+            # 3. Breakeven Shield: Si ya tocó +0.18%, prohíbe que caiga a negativo
+            elif peak_pct >= 0.18 and unr_pct <= 0.02 and unr_pct >= -0.05:
+                exit_reason = f"[Breakeven Shield] {sym} protegido sin pérdidas (+{unr_pct:.2f}%) tras no superar resistencia"
+
+            # 4. Toma de ganancia rápida en verde si llega a resistencia clara
+            elif unr_pct >= 0.16 and asset_rsi >= 66.0 and hold_sec >= 45:
+                exit_reason = f"[Scalp Verde en Resistencia] {sym} cobró +{unr_pct:.2f}% al llegar a sobrecompra (RSI={asset_rsi:.1f})"
+
+            # 5. Stop Loss Estricto (con margen para fluctuación sana)
             elif unr_pct <= -sl_target:
-                exit_reason = f"[Auto-SL {sym} -{sl_target:.2f}%] Cierre defensivo en {unr_pct:+.2f}%"
+                exit_reason = f"[Stop Loss Controlado] {sym} cortó pérdida en {unr_pct:+.2f}% (SL: -{sl_target:.2f}%)"
+
+            # 6. Rotación Inteligente: Solo después del tiempo de maduración (150 segundos) y si hay un reemplazo A+
             elif (
-                hold_sec >= 18
+                hold_sec >= getattr(bot, "min_hold_seconds", 150)
                 and best_unheld_opp
-                and (
-                    (best_unheld_opp["opportunity_score"] - current_score) >= 8.5
-                    or (sma_diff < -1.2 and current_score < 56.0)
-                )
+                and (best_unheld_opp["opportunity_score"] - current_score) >= 16.0
+                and best_unheld_opp["opportunity_score"] >= 72.0
             ):
                 new_sym = best_unheld_opp["symbol"]
                 exit_reason = (
-                    f"[Rotación Dinámica: {sym} → {new_sym}] {sym} perdió fuerza (Score {current_score:.1f}) "
-                    f"frente a {new_sym} (Score {best_unheld_opp['opportunity_score']:.1f})"
+                    f"[Rotación A+: {sym} → {new_sym}] {sym} agotó impulso ({hold_sec}s, Score {current_score:.1f}) "
+                    f"sustituido por {new_sym} (Score {best_unheld_opp['opportunity_score']:.1f})"
                 )
 
             if exit_reason:
@@ -343,7 +353,7 @@ async def run_bot_cycle(
                     side="SELL",
                     ticker=tickers_cache[held_book],
                     crypto_amount=qty,
-                    source="BOT:ROTADOR",
+                    source="BOT:SNIPER",
                     reason=exit_reason,
                     confidence=0.96,
                 )
@@ -351,12 +361,12 @@ async def run_bot_cycle(
                     bot.last_trade_ts = time.time()
                     last_executed_trade = res["trade"]
 
-        # B) Llenar automáticamente hasta 4 Activos Manejados con las mejores oportunidades del radar
+        # B) Entradas Selectivas: Solo activos con confirmación de rebote y alta probabilidad
         portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
         positions = portfolio.get("positions", {})
         open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
 
-        if open_positions_count < 4 and engine.cash_mxn >= 200.0:
+        if open_positions_count < 4 and engine.cash_mxn >= 250.0:
             chosen_opp = None
             if target_book:
                 chosen_opp = next((o for o in opportunities_cache if o["book"] == target_book), None)
@@ -364,31 +374,31 @@ async def run_bot_cycle(
                 for opp in opportunities_cache:
                     b = opp["book"]
                     already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
+                    # Filtros de entrada Sniper: Score >= 65, spread bajo <= 8.5 bps, y sin estar en sobrecompra (RSI <= 54)
                     if (
                         not already_held
-                        and opp["opportunity_score"] >= 54.0
-                        and float(opp.get("spread_bps", 99.0)) <= 18.0
+                        and opp["opportunity_score"] >= 65.0
+                        and float(opp.get("spread_bps", 99.0)) <= 8.5
+                        and float(opp.get("rsi_14", 50.0)) <= 54.0
                     ):
                         chosen_opp = opp
                         break
 
             if chosen_opp:
                 b = chosen_opp["book"]
-                # Asignar equitativamente el efectivo entre los slots vacíos de los 4 activos manejados
                 slots_remaining = max(1, 4 - open_positions_count)
                 mxn_to_spend = min(
-                    engine.cash_mxn * 0.94,
-                    max(engine.cash_mxn / slots_remaining * 0.92, engine.cash_mxn * (bot.trade_size_pct / 100.0)),
+                    engine.cash_mxn * 0.92,
+                    max(engine.cash_mxn / slots_remaining * 0.90, engine.cash_mxn * (bot.trade_size_pct / 100.0)),
                 )
                 if mxn_to_spend >= 100.0 and b in tickers_cache:
-                    # Poblar serie histórica del activo si aún tiene pocos puntos
                     if len(price_history_by_book.get(b, [])) < 5:
                         await _seed_book_history(b)
                     conf = round(min(0.98, chosen_opp["opportunity_score"] / 100.0), 2)
                     auto_tp = chosen_opp["auto_tp_pct"]
                     auto_sl = chosen_opp["auto_sl_pct"]
                     reason = (
-                        f"[Auto-Selección Top 4 ({chosen_opp['category']}) | Score {chosen_opp['opportunity_score']} | "
+                        f"[Entrada Sniper ({chosen_opp['category']}) | Score {chosen_opp['opportunity_score']} | "
                         f"TP +{auto_tp}% / SL -{auto_sl}%] {chosen_opp['setup_type']}: {chosen_opp['rationale']}"
                     )
                     res = engine.execute_order(
@@ -396,7 +406,7 @@ async def run_bot_cycle(
                         side="BUY",
                         ticker=tickers_cache[b],
                         mxn_amount=mxn_to_spend,
-                        source="BOT:AUTO-4",
+                        source="BOT:SNIPER",
                         reason=reason,
                         confidence=conf,
                         auto_tp_pct=auto_tp,
@@ -408,7 +418,7 @@ async def run_bot_cycle(
                             "action": "BUY",
                             "confidence": conf,
                             "reason": reason,
-                            "strategy": "auto_4_rotator",
+                            "strategy": "sniper_scalper",
                             "timestamp": datetime.now().isoformat(),
                             "features": bot.extract_features(
                                 price_history_by_book.get(b, []),
