@@ -27,8 +27,13 @@ import {
   ShieldAlert,
   Sliders,
   DollarSign,
-  Maximize2
+  Maximize2,
+  ShieldCheck,
+  Columns,
+  Grid,
+  Square
 } from 'lucide-react'
+import ProChartStudio from './ProChartStudio'
 
 const isLocalVite = typeof window !== 'undefined' && window.location.port === '5173'
 const API_BASE = isLocalVite ? 'http://127.0.0.1:8000' : ''
@@ -134,6 +139,10 @@ export default function App() {
   const [scannerFilter, setScannerFilter] = useState('ALL')
   const [statusBanner, setStatusBanner] = useState(null)
   const [busy, setBusy] = useState(false)
+  const [workspaceLayout, setWorkspaceLayout] = useState('quad') // 'quad' | 'dual' | 'focus'
+  const [focusedAssetIndex, setFocusedAssetIndex] = useState(0)
+  const [showRiskCalculator, setShowRiskCalculator] = useState(false)
+  const [riskAmountMXN, setRiskAmountMXN] = useState(150)
   const wsRef = useRef(null)
 
   const showToast = (type, message) => {
@@ -244,6 +253,59 @@ export default function App() {
     }
   }
 
+  const handleQuickBuy = async (book, mxnAmount) => {
+    setBusy(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          book,
+          side: 'BUY',
+          mxn_amount: mxnAmount,
+          reason: 'Orden manual ejecutada desde el Gráfico Pro (Trade from Chart)',
+        }),
+      })
+      if (res.ok) {
+        showToast('success', `Compra ejecutada en ${catalog[book]?.symbol || book}: ${fmtMXN(mxnAmount, 0)}`)
+        fetchState()
+      } else {
+        const err = await res.json()
+        showToast('error', err.detail || 'Error ejecutando compra rápida')
+      }
+    } catch (e) {
+      showToast('error', 'Error de conexión al enviar orden')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const handleQuickSell = async (book) => {
+    setBusy(true)
+    try {
+      const res = await fetch(`${API_BASE}/api/order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          book,
+          side: 'SELL',
+          reason: 'Cierre manual ejecutado desde el Gráfico Pro (Trade from Chart)',
+        }),
+      })
+      if (res.ok) {
+        showToast('info', `Posición en ${catalog[book]?.symbol || book} cerrada exitosamente`)
+        fetchState()
+      } else {
+        const err = await res.json()
+        showToast('error', err.detail || 'Error al cerrar posición')
+      }
+    } catch (e) {
+      showToast('error', 'Error de conexión al cerrar posición')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const handleResetPortfolio = async () => {
     setBusy(true)
     try {
@@ -264,6 +326,9 @@ export default function App() {
 
   const filteredOpportunities = opportunities.filter((opp) => {
     if (scannerFilter === 'ALL') return true
+    if (scannerFilter === 'PREMIER') return opp.is_premier
+    if (scannerFilter === 'SNIPER') return opp.opportunity_score >= 76
+    if (scannerFilter === 'OVERSOLD') return opp.rsi_14 < 40
     if (scannerFilter === 'POSITIONS') return opp.has_position
     return opp.category === scannerFilter
   })
@@ -315,6 +380,19 @@ export default function App() {
             {bot.enabled ? <><Pause size={14} /> Pausar</> : <><Play size={14} /> Encender</>}
           </button>
 
+          <button
+            className="btn btn-secondary"
+            style={{
+              padding: '7px 12px',
+              background: showRiskCalculator ? 'rgba(56,189,248,0.2)' : undefined,
+              borderColor: showRiskCalculator ? '#38bdf8' : undefined,
+            }}
+            onClick={() => setShowRiskCalculator(!showRiskCalculator)}
+            title="Calculadora de Gestión de Riesgo y Tamaño de Posición (ProRealTime)"
+          >
+            <ShieldCheck size={14} color="#38bdf8" /> Gestión de Riesgo Pro
+          </button>
+
           <a
             href={`${API_BASE}/api/trades/export`}
             target="_blank"
@@ -360,6 +438,99 @@ export default function App() {
           {statusBanner.type === 'error' ? <AlertCircle size={17} color="#f43f5e" /> : <CheckCircle2 size={17} color="#10b981" />}
           <span>{statusBanner.message}</span>
         </div>
+      )}
+
+      {/* PANEL DE GESTIÓN MONETARIA PROREALTIME */}
+      {showRiskCalculator && (
+        <section className="card" style={{ background: '#0a101f', borderColor: '#38bdf8', padding: '16px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <ShieldCheck size={20} color="#38bdf8" />
+              <div>
+                <strong style={{ fontSize: '1rem', color: '#fff' }}>Calculadora de Gestión Monetaria & Riesgo Asimétrico (ProRealTime Money Management)</strong>
+                <div style={{ fontSize: '0.74rem', color: '#94a3b8' }}>
+                  Define tu tolerancia máxima de pérdida por operación y calcula el tamaño exacto de posición con Stop Loss estricto (-0.35%) y Take Profit (+0.55%).
+                </div>
+              </div>
+            </div>
+            <button className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: '0.72rem' }} onClick={() => setShowRiskCalculator(false)}>
+              Cerrar
+            </button>
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
+            <div style={{ background: '#0d1527', padding: 12, borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+              <span style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Pérdida Máxima Tolerable por Trade:</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                <span className="mono" style={{ fontSize: '1.25rem', fontWeight: 800, color: '#f43f5e' }}>
+                  -${riskAmountMXN} MXN
+                </span>
+              </div>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8 }}>
+                {[100, 150, 250, 400].map((amt) => (
+                  <button
+                    key={amt}
+                    style={{
+                      background: riskAmountMXN === amt ? 'rgba(244,63,94,0.25)' : '#070b14',
+                      color: riskAmountMXN === amt ? '#f43f5e' : '#94a3b8',
+                      border: `1px solid ${riskAmountMXN === amt ? '#f43f5e' : 'rgba(255,255,255,0.08)'}`,
+                      borderRadius: 5,
+                      padding: '3px 8px',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => setRiskAmountMXN(amt)}
+                  >
+                    ${amt}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ background: '#0d1527', padding: 12, borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+              <span style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Tamaño de Posición Sugerido:</span>
+              <div className="mono" style={{ fontSize: '1.25rem', fontWeight: 800, color: '#38bdf8', marginTop: 6 }}>
+                {fmtMXN(Math.round(riskAmountMXN / 0.0035), 0)}
+              </div>
+              <span style={{ fontSize: '0.7rem', color: '#64748b' }}>
+                Fórmula: Riesgo / 0.35% SL = {( (riskAmountMXN / 0.0035) / Math.max(1, portfolio.total_equity_mxn || 100000) * 100 ).toFixed(1)}% del capital
+              </span>
+            </div>
+
+            <div style={{ background: '#0d1527', padding: 12, borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+              <span style={{ fontSize: '0.74rem', color: '#94a3b8' }}>Ganancia Proyectada al Take Profit (+0.55%):</span>
+              <div className="mono" style={{ fontSize: '1.25rem', fontWeight: 800, color: '#10b981', marginTop: 6 }}>
+                +{fmtMXN(Math.round((riskAmountMXN / 0.0035) * 0.0055), 0)}
+              </div>
+              <span style={{ fontSize: '0.7rem', color: '#10b981' }}>
+                Ratio Riesgo/Recompensa: 1 : 1.57 (Asimétrico Favorable)
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'center', gap: 6 }}>
+              <button
+                className="btn btn-primary"
+                style={{
+                  padding: '9px 14px',
+                  fontWeight: 800,
+                  fontSize: '0.78rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 6,
+                }}
+                onClick={() => {
+                  const targetPct = Math.min(60, Math.max(15, Math.round(((riskAmountMXN / 0.0035) / Math.max(1, portfolio.total_equity_mxn || 100000)) * 100)))
+                  handleUpdateBot({ trade_size_pct: targetPct })
+                  showToast('success', `Tamaño del Bot fijado a ${targetPct}% ($${riskAmountMXN} MXN riesgo máx)`)
+                }}
+              >
+                <Sliders size={15} /> Aplicar Tamaño al Auto-Pilot ({Math.min(60, Math.max(15, Math.round(((riskAmountMXN / 0.0035) / Math.max(1, portfolio.total_equity_mxn || 100000)) * 100)))}%)
+              </button>
+            </div>
+          </div>
+        </section>
       )}
 
       {/* KPI STRIP */}
@@ -427,153 +598,156 @@ export default function App() {
       </section>
 
       {/* =====================================================================
-          MONITOR CUÁDRUPLE: LOS 4 ACTIVOS MANEJADOS CON SUS GRÁFICOS Y PARÁMETROS
+          MONITOR MULTI-LAYOUT ESTILO PROREALTIME WEB (STUDIO PROFESIONAL)
          ===================================================================== */}
-      <section className="card" style={{ borderColor: 'rgba(56,189,248,0.5)', background: '#0e1628' }}>
-        <div className="card-header">
+      <section className="card" style={{ borderColor: 'rgba(56,189,248,0.5)', background: '#0c1322' }}>
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: 12 }}>
           <div>
             <div className="card-title" style={{ fontSize: '1.08rem' }}>
               <Layers size={20} color="#38bdf8" />
-              <span>Monitor de Cartera: Activos Líderes Manejados en Tiempo Real</span>
+              <span>Studio de Trading Profesional (Estilo ProRealTime Web)</span>
             </div>
             <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: 2 }}>
-              El algoritmo opera exclusivamente los 7 activos líderes de ultra-liquidez (BTC, ETH, SOL, XRP, NVDA, AAPL, NQ-FUT) con Take Profit asimétrico (+0.55%), Trailing Profit (+0.30%) y Stop Loss estricto (-0.35%).
+              Velas Japonesas en tiempo real, Overlays de Trading from Chart (TP / SL en pantalla), Indicadores (VWAP, EMA, RSI) y Ejecución Rápida 1-Click.
             </div>
+          </div>
+
+          {/* Selector de Layouts ProRealTime */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, background: '#070b14', padding: 3, borderRadius: 8, border: '1px solid rgba(255,255,255,0.08)' }}>
+            <button
+              style={{
+                background: workspaceLayout === 'quad' ? '#38bdf8' : 'transparent',
+                color: workspaceLayout === 'quad' ? '#04121e' : '#94a3b8',
+                border: 'none',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+              onClick={() => setWorkspaceLayout('quad')}
+              title="Layout Cuádruple (4 Gráficos Simultáneos)"
+            >
+              <Grid size={13} /> Cuádruple (4)
+            </button>
+            <button
+              style={{
+                background: workspaceLayout === 'dual' ? '#38bdf8' : 'transparent',
+                color: workspaceLayout === 'dual' ? '#04121e' : '#94a3b8',
+                border: 'none',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+              onClick={() => setWorkspaceLayout('dual')}
+              title="Layout Dual (2 Gráficos en Paralelo)"
+            >
+              <Columns size={13} /> Dual (2)
+            </button>
+            <button
+              style={{
+                background: workspaceLayout === 'focus' ? '#38bdf8' : 'transparent',
+                color: workspaceLayout === 'focus' ? '#04121e' : '#94a3b8',
+                border: 'none',
+                borderRadius: 6,
+                padding: '4px 10px',
+                fontSize: '0.74rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+              onClick={() => setWorkspaceLayout('focus')}
+              title="Layout Foco Total (1 Gráfico Grande con Libro DOM)"
+            >
+              <Square size={13} /> Foco Total (1)
+            </button>
           </div>
         </div>
 
-        {/* REJILLA DE LOS 4 ACTIVOS */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 14 }}>
-          {managed4.map((asset) => {
-            const isHeld = asset.is_active_position
-            const pos = asset.position || {}
-            const unrPct = pos.unrealized_pnl_pct || 0
-            const cardBorder = isHeld ? (unrPct >= 0 ? 'rgba(16,185,129,0.5)' : 'rgba(244,63,94,0.5)') : 'rgba(56,189,248,0.25)'
-
-            return (
-              <div
-                key={asset.book}
-                style={{
-                  background: 'linear-gradient(180deg, #131c31 0%, #0c1220 100%)',
-                  border: `1px solid ${cardBorder}`,
-                  borderRadius: 12,
-                  padding: 13,
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: 8,
-                }}
+        {/* SI ESTÁ EN FOCO TOTAL: PESTAÑAS PARA CAMBIAR RÁPIDAMENTE DE ACTIVO */}
+        {workspaceLayout === 'focus' && (
+          <div style={{ display: 'flex', gap: 8, marginBottom: 12, overflowX: 'auto', paddingBottom: 4 }}>
+            {managed4.map((ast, idx) => (
+              <button
+                key={ast.book}
+                className={`book-tab ${focusedAssetIndex === idx ? 'active' : ''}`}
+                style={{ padding: '5px 12px', fontSize: '0.76rem', display: 'flex', alignItems: 'center', gap: 6 }}
+                onClick={() => setFocusedAssetIndex(idx)}
               >
-                {/* Cabecera del Slot */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span
-                      className="mono"
-                      style={{
-                        background: isHeld ? '#10b981' : '#38bdf8',
-                        color: '#061a14',
-                        fontWeight: 800,
-                        padding: '2px 7px',
-                        borderRadius: 6,
-                        fontSize: '0.72rem',
-                      }}
-                    >
-                      SLOT #{asset.slot}
-                    </span>
-                    <strong style={{ fontSize: '0.98rem' }}>{asset.symbol}</strong>
-                    <span
-                      style={{
-                        fontSize: '0.68rem',
-                        padding: '2px 7px',
-                        borderRadius: 999,
-                        background: 'rgba(255,255,255,0.08)',
-                        color: '#94a3b8',
-                      }}
-                    >
-                      {asset.category}
-                    </span>
-                  </div>
+                <strong>{ast.symbol}</strong>
+                <span className="mono" style={{ fontSize: '0.7rem', color: ast.is_active_position ? '#10b981' : '#94a3b8' }}>
+                  {ast.is_active_position ? 'EN CARTERA' : fmtMXN(ast.last_price, 1)}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
-                  <span
-                    className="mono"
-                    style={{
-                      fontSize: '0.75rem',
-                      fontWeight: 700,
-                      color: isHeld ? (unrPct >= 0 ? '#10b981' : '#f43f5e') : '#38bdf8',
-                    }}
-                  >
-                    {isHeld ? `${unrPct >= 0 ? '+' : ''}${unrPct.toFixed(2)}% (EN CARTERA)` : 'VIGILANCIA TOP'}
-                  </span>
-                </div>
-
-                {/* Precio y Variación */}
-                <div className="mono" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                  <span style={{ fontSize: '1.2rem', fontWeight: 800 }}>{fmtMXN(asset.last_price)}</span>
-                  <span style={{ fontSize: '0.8rem', color: asset.change_24_pct >= 0 ? '#10b981' : '#f43f5e' }}>
-                    {asset.change_24_pct >= 0 ? '+' : ''}{asset.change_24_pct}% (24h)
-                  </span>
-                </div>
-
-                {/* Mini Gráfico en Tiempo Real */}
-                <div style={{ background: '#080d16', borderRadius: 8, padding: '4px 6px', border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <MiniChart data={asset.price_history} color={isHeld ? (unrPct >= 0 ? '#10b981' : '#f43f5e') : '#38bdf8'} />
-                </div>
-
-                {/* Parámetros Técnicos y Metas Dinámicas */}
-                <div
-                  className="mono"
-                  style={{
-                    display: 'grid',
-                    gridTemplateColumns: '1fr 1fr',
-                    gap: 6,
-                    fontSize: '0.74rem',
-                    background: '#090e1a',
-                    padding: 8,
-                    borderRadius: 8,
-                    border: '1px solid rgba(255,255,255,0.04)',
-                  }}
-                >
-                  <div>
-                    <span style={{ color: '#94a3b8' }}>Auto-TP: </span>
-                    <strong style={{ color: '#10b981' }}>+{asset.auto_tp_pct}%</strong>
-                    <div style={{ fontSize: '0.68rem', color: '#64748b' }}>Meta: {fmtMXN(asset.tp_price)}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: '#94a3b8' }}>Auto-SL: </span>
-                    <strong style={{ color: '#f43f5e' }}>-{asset.auto_sl_pct}%</strong>
-                    <div style={{ fontSize: '0.68rem', color: '#64748b' }}>Piso: {fmtMXN(asset.sl_price)}</div>
-                  </div>
-                  <div>
-                    <span style={{ color: '#94a3b8' }}>Trailing Lock: </span>
-                    <strong style={{ color: '#38bdf8' }}>+{asset.auto_trail_arm_pct}%</strong>
-                  </div>
-                  <div>
-                    <span style={{ color: '#94a3b8' }}>RSI(14): </span>
-                    <strong style={{ color: asset.rsi_14 > 65 ? '#f43f5e' : asset.rsi_14 < 38 ? '#10b981' : '#f1f5f9' }}>
-                      {asset.rsi_14}
-                    </strong>
-                  </div>
-                </div>
-
-                {/* Estado y Diagnóstico */}
-                <div style={{ fontSize: '0.73rem', color: '#cbd5e1' }}>
-                  <strong style={{ color: '#38bdf8' }}>{asset.setup_type}:</strong> {asset.rationale}
-                </div>
-
-                {/* Botón de Rotación Directa */}
-                {isHeld && (
-                  <button
-                    className="btn btn-secondary"
-                    style={{ padding: '6px 10px', fontSize: '0.74rem', marginTop: 3 }}
-                    onClick={() => handleRotateAsset(asset.book)}
-                    disabled={busy}
-                  >
-                    <Repeat size={13} color="#f59e0b" /> Rotar este activo ahora
-                  </button>
-                )}
-              </div>
-            )
-          })}
-        </div>
+        {/* RENDERIZADO SEGÚN EL LAYOUT SELECCIONADO */}
+        {workspaceLayout === 'focus' ? (
+          <div>
+            {managed4[focusedAssetIndex] && (
+              <ProChartStudio
+                asset={managed4[focusedAssetIndex]}
+                orderBook={state.order_book}
+                onQuickBuy={handleQuickBuy}
+                onQuickSell={handleQuickSell}
+                onRotate={handleRotateAsset}
+                availableCash={portfolio.cash_mxn}
+                isFocusMode={true}
+                onToggleFocus={() => setWorkspaceLayout('quad')}
+              />
+            )}
+          </div>
+        ) : workspaceLayout === 'dual' ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(440px, 1fr))', gap: 14 }}>
+            {managed4.slice(0, 2).map((asset) => (
+              <ProChartStudio
+                key={asset.book}
+                asset={asset}
+                orderBook={state.order_book}
+                onQuickBuy={handleQuickBuy}
+                onQuickSell={handleQuickSell}
+                onRotate={handleRotateAsset}
+                availableCash={portfolio.cash_mxn}
+                isFocusMode={true}
+                onToggleFocus={() => {
+                  setFocusedAssetIndex(managed4.findIndex((m) => m.book === asset.book))
+                  setWorkspaceLayout('focus')
+                }}
+              />
+            ))}
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 14 }}>
+            {managed4.map((asset, idx) => (
+              <ProChartStudio
+                key={asset.book}
+                asset={asset}
+                orderBook={state.order_book}
+                onQuickBuy={handleQuickBuy}
+                onQuickSell={handleQuickSell}
+                onRotate={handleRotateAsset}
+                availableCash={portfolio.cash_mxn}
+                isFocusMode={false}
+                onToggleFocus={() => {
+                  setFocusedAssetIndex(idx)
+                  setWorkspaceLayout('focus')
+                }}
+              />
+            ))}
+          </div>
+        )}
       </section>
 
       {/* =====================================================================
@@ -592,16 +766,16 @@ export default function App() {
           </div>
         </div>
 
-        {/* Pestañas de Filtro */}
+        {/* Pestañas de Filtro ProRealScreener */}
         <div className="book-tabs" style={{ marginBottom: 12 }}>
           {[
             { id: 'ALL', label: `🌐 Todos (${opportunities.length})` },
+            { id: 'PREMIER', label: '⭐ Líderes Premier (7)' },
+            { id: 'SNIPER', label: '⚡ Sniper (Score ≥ 76)' },
+            { id: 'OVERSOLD', label: '📉 Sobreventa (RSI < 40)' },
             { id: 'Acciones', label: '📈 Acciones (Wall Street)' },
             { id: 'Futuros', label: '⚡ Futuros (CME / NYMEX)' },
-            { id: 'Cripto MXN', label: '🇲🇽 Cripto MXN' },
-            { id: 'Oro & RWA', label: '🪙 Oro & RWA' },
-            { id: 'Divisas & FX', label: '💱 Divisas & FX' },
-            { id: 'Layer-1 & DeFi', label: '🚀 Layer-1 & DeFi' },
+            { id: 'Cripto MXN', label: '🪙 Cripto MXN' },
             { id: 'POSITIONS', label: `💼 En Cartera (${openPositionsList.length})` },
           ].map((tab) => (
             <button
