@@ -84,6 +84,10 @@ class OpportunityScanner:
         if category in ("Divisas & FX", "Oro & RWA"):
             base_tp = max(0.14, min(0.45, friction_floor_pct + scalp_move_pct * 0.8))
             base_sl = max(0.28, min(0.75, base_tp * 1.45))
+        elif category in ("Acciones", "Futuros"):
+            # Acciones de Wall Street y Futuros CME tienen spreads ultra bajos (1.8-2.5 bps) ideales para Scalping
+            base_tp = max(0.18, min(0.65, friction_floor_pct + scalp_move_pct * 0.95))
+            base_sl = max(0.32, min(0.85, base_tp * 1.35))
         elif category == "Alta Volatilidad":
             base_tp = max(0.32, min(1.25, friction_floor_pct + scalp_move_pct * 1.35))
             base_sl = max(0.55, min(1.50, base_tp * 1.30))

@@ -3,6 +3,7 @@ import io
 import json
 import os
 import sqlite3
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -191,6 +192,7 @@ class PaperTradingEngine:
             pos["avg_buy_price"] = (prev_cost + gross_mxn) / new_qty if new_qty > 0 else 0.0
             pos["amount"] = new_qty
             pos["peak_pnl_pct"] = 0.0
+            pos["opened_ts"] = time.time()
             if auto_tp_pct is not None:
                 pos["auto_tp_pct"] = float(auto_tp_pct)
             if auto_sl_pct is not None:
@@ -450,6 +452,7 @@ class PaperTradingEngine:
                 "auto_sl_pct": auto_sl,
                 "auto_trail_arm_pct": auto_trail_arm,
                 "auto_trail_drop_pct": auto_trail_drop,
+                "hold_seconds": int(time.time() - float(pos.get("opened_ts") or time.time())) if qty > 0 else 0,
                 "realized_pnl_mxn": round(pos.get("realized_pnl", 0.0), 2),
             }
 

@@ -3,7 +3,7 @@ import os
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -56,6 +56,12 @@ class ForceBotStepRequest(BaseModel):
 bitso = BitsoClient()
 engine = PaperTradingEngine(initial_cash_mxn=100_000.0, fee_rate=0.0003)
 bot = TradingBot()
+bot.enabled = True
+bot.multi_asset_auto = True
+bot.auto_tp_sl_by_coin = True
+bot.trade_size_pct = 23.0
+bot.cooldown_seconds = 4
+
 scanner = OpportunityScanner()
 
 active_book: str = "btc_mxn"
@@ -92,15 +98,25 @@ def _append_price_point(book: str, price: float, timestamp_label: Optional[str] 
         price_history_by_book[book] = hist[-90:]
 
 
+def _sync_yahoo_histories(yf_series: Dict[str, List[Tuple[str, float]]]) -> None:
+    for book, pts in yf_series.items():
+        if len(price_history_by_book.get(book, [])) < 5:
+            for lbl, px in pts:
+                _append_price_point(book, px, lbl)
+
+
 async def _seed_book_history(book: str) -> None:
     trades = await bitso.get_recent_trades(book, limit=35)
     for t in trades:
-        raw_ts = t.get("timestamp", "")
-        try:
-            dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone()
-            label = dt.strftime("%H:%M:%S")
-        except Exception:
-            label = datetime.now().strftime("%H:%M:%S")
+        raw_ts = str(t.get("timestamp", ""))
+        if ":" in raw_ts and len(raw_ts) <= 10:
+            label = raw_ts
+        else:
+            try:
+                dt = datetime.fromisoformat(raw_ts.replace("Z", "+00:00")).astimezone()
+                label = dt.strftime("%H:%M:%S")
+            except Exception:
+                label = datetime.now().strftime("%H:%M:%S")
         _append_price_point(book, float(t["price"]), label)
 
 
@@ -119,9 +135,91 @@ def _refresh_opportunities() -> None:
     )
 
 
+def _build_managed_4_assets(
+    portfolio_summary: Dict[str, Any], opp_by_book: Dict[str, Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Construye el paquete completo de los 4 Activos Manejados (con su serie histórica para gráfico
+    y todos sus parámetros técnicos y de Auto-TP/SL) para el Monitor Cuádruple en Tiempo Real.
+    """
+    positions = portfolio_summary.get("positions", {})
+    held_books = [
+        b
+        for b, p in sorted(
+            positions.items(),
+            key=lambda kv: float(kv[1].get("market_value_mxn", 0.0)),
+            reverse=True,
+        )
+        if float(p.get("amount", 0.0)) > 1e-8
+    ]
+
+    selected_books: List[str] = list(held_books[:4])
+    for opp in opportunities_cache:
+        if len(selected_books) >= 4:
+            break
+        if opp["book"] not in selected_books:
+            selected_books.append(opp["book"])
+
+    managed_cards: List[Dict[str, Any]] = []
+    for idx, b in enumerate(selected_books[:4]):
+        meta = ASSET_CATALOG.get(b, {"name": b.upper(), "symbol": b.upper(), "pair": b.upper(), "category": "Activo"})
+        tk = tickers_cache.get(b, {})
+        pos = positions.get(
+            b,
+            {
+                "book": b,
+                "amount": 0.0,
+                "avg_buy_price": 0.0,
+                "mark_price": tk.get("last", 0.0),
+                "market_value_mxn": 0.0,
+                "unrealized_pnl_mxn": 0.0,
+                "unrealized_pnl_pct": 0.0,
+                "peak_pnl_pct": 0.0,
+                "hold_seconds": 0,
+            },
+        )
+        opp = opp_by_book.get(b, {})
+        auto_tp = float(opp.get("auto_tp_pct") or pos.get("auto_tp_pct") or 0.35)
+        auto_sl = float(opp.get("auto_sl_pct") or pos.get("auto_sl_pct") or 0.65)
+        auto_trail = float(opp.get("auto_trail_arm_pct") or round(auto_tp * 0.48, 2))
+
+        avg_entry = float(pos.get("avg_buy_price") or tk.get("last") or 0.0)
+        tp_price = round(avg_entry * (1.0 + auto_tp / 100.0), 6 if avg_entry < 1 else 2) if avg_entry > 0 else 0.0
+        sl_price = round(avg_entry * (1.0 - auto_sl / 100.0), 6 if avg_entry < 1 else 2) if avg_entry > 0 else 0.0
+
+        managed_cards.append({
+            "slot": idx + 1,
+            "book": b,
+            "name": meta.get("name", b),
+            "symbol": meta.get("symbol", b),
+            "pair": meta.get("pair", b),
+            "category": meta.get("category", "Activo"),
+            "is_active_position": float(pos.get("amount", 0.0)) > 1e-8,
+            "last_price": tk.get("last", 0.0),
+            "change_24_pct": tk.get("change_24_pct", 0.0),
+            "vwap_diff_pct": opp.get("vwap_diff_pct", 0.0),
+            "rsi_14": opp.get("rsi_14", 50.0),
+            "sma_diff_bps": opp.get("sma_diff_bps", 0.0),
+            "spread_bps": tk.get("spread_bps", 0.0),
+            "opportunity_score": opp.get("opportunity_score", 55.0),
+            "setup_type": opp.get("setup_type", "Monitoreo Activo"),
+            "rationale": opp.get("rationale", ""),
+            "auto_tp_pct": auto_tp,
+            "auto_trail_arm_pct": auto_trail,
+            "auto_sl_pct": auto_sl,
+            "tp_price": tp_price,
+            "sl_price": sl_price,
+            "position": pos,
+            "price_history": price_history_by_book.get(b, []),
+        })
+
+    return managed_cards
+
+
 def build_state_payload() -> Dict[str, Any]:
     opp_by_book = {o["book"]: o for o in opportunities_cache}
     portfolio_summary = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
+    managed_4 = _build_managed_4_assets(portfolio_summary, opp_by_book)
     return {
         "active_book": active_book,
         "supported_books": SUPPORTED_BOOKS,
@@ -133,6 +231,7 @@ def build_state_payload() -> Dict[str, Any]:
             active_book, {"bids": [], "asks": [], "bid_volume": 0.0, "ask_volume": 0.0, "imbalance": 0.5}
         ),
         "price_history": price_history_by_book.get(active_book, []),
+        "managed_4_assets": managed_4,
         "portfolio": portfolio_summary,
         "opportunities": opportunities_cache,
         "arbitrage": arbitrage_cache,
@@ -161,19 +260,30 @@ async def run_bot_cycle(
     target_book: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Motor de Scalping de Alta Frecuencia con TP y SL Automatizados por Moneda:
-    - Evalúa primero todas las posiciones abiertas contra su Take Profit / Stop Loss / Trailing Lock
-      dinámico específico de esa moneda (calculado con sus últimos ticks, volatilidad y spread).
-    - Si hay espacio en cartera (hasta 6 posiciones simultáneas), ejecuta compras rápidas en las
-      mejores oportunidades de alta liquidez.
+    Motor Autónomo de Gestión y Rotación de 4 Activos (Cripto + Acciones + Futuros + FX/Oro):
+      1. Ejecuta cobros automáticos de ganancia rápida (Auto-TP, Trailing Lock, Scalp en Verde)
+         y cortes defensivos (Auto-SL) personalizados por activo.
+      2. Rotación Dinámica por Comportamiento (Sin Preguntar): Si un activo en cartera pierde
+         impulso o aparece una oportunidad mucho más fuerte en otro mercado, vende el activo
+         débil y compra inmediatamente el nuevo líder para mantener los 4 slots optimizados.
+      3. Si hay menos de 4 activos abiertos en cartera, toma automáticamente las mejores
+         oportunidades hasta completar los 4 activos manejados.
     """
     opp_by_book = {o["book"]: o for o in opportunities_cache}
     portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
     positions = portfolio.get("positions", {})
     last_executed_trade = None
 
+    # Identificar el mejor candidato libre del radar para evaluar rotaciones
+    best_unheld_opp = None
+    for opp in opportunities_cache:
+        b = opp["book"]
+        if float(positions.get(b, {}).get("amount", 0.0)) <= 1e-8 and float(opp.get("spread_bps", 99.0)) <= 18.0:
+            best_unheld_opp = opp
+            break
+
     if (bot.multi_asset_auto or target_book) and not force_trade_side:
-        # A) Revisar TODAS las posiciones abiertas para cobrar ganancias rápidas o cortar pérdidas
+        # A) Evaluar salidas por Auto-TP, Trailing Lock, Auto-SL o Rotación por Comportamiento
         for held_book, pos_data in list(positions.items()):
             qty = float(pos_data.get("amount", 0.0))
             if qty <= 1e-8 or held_book not in tickers_cache:
@@ -181,11 +291,13 @@ async def run_bot_cycle(
 
             unr_pct = float(pos_data.get("unrealized_pnl_pct", 0.0))
             peak_pct = float(pos_data.get("peak_pnl_pct", unr_pct))
+            hold_sec = int(pos_data.get("hold_seconds", 0))
             opp_info = opp_by_book.get(held_book, {})
             asset_rsi = float(opp_info.get("rsi_14", 50.0))
             sma_diff = float(opp_info.get("sma_diff_bps", 0.0))
+            current_score = float(opp_info.get("opportunity_score", 55.0))
+            sym = ASSET_CATALOG.get(held_book, {}).get("symbol", held_book.upper())
 
-            # Usar TP y SL automatizados por moneda si está activo, o el global de respaldo
             if bot.auto_tp_sl_by_coin:
                 tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or bot.take_profit_pct)
                 sl_target = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or bot.stop_loss_pct)
@@ -199,23 +311,30 @@ async def run_bot_cycle(
 
             exit_reason = None
             if unr_pct >= tp_target:
+                exit_reason = f"[Auto-TP {sym} +{tp_target:.2f}%] Ganancia rápida cobrada en +{unr_pct:.2f}%"
+            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.03:
                 exit_reason = (
-                    f"[Auto-TP {held_book.split('_')[0].upper()} +{tp_target:.2f}%] "
-                    f"Ganancia rápida cobrada en +{unr_pct:.2f}%"
+                    f"[Trailing Scalp Lock {sym}] Aseguró +{unr_pct:.2f}% "
+                    f"(tras tocar pico de +{peak_pct:.2f}%)"
                 )
-            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.04:
+            elif unr_pct >= 0.06 and (asset_rsi >= 60.0 or sma_diff < -0.6):
                 exit_reason = (
-                    f"[Trailing Scalp Lock] Aseguró +{unr_pct:.2f}% "
-                    f"(pico +{peak_pct:.2f}%, umbral +{trail_arm:.2f}%)"
-                )
-            elif unr_pct >= 0.08 and (asset_rsi >= 60.0 or sma_diff < -1.0):
-                exit_reason = (
-                    f"[Scalp Rápido en Verde] Cobró +{unr_pct:.2f}% al frenarse impulso (RSI={asset_rsi:.1f})"
+                    f"[Cobro Rápido en Verde {sym}] Aseguró +{unr_pct:.2f}% al frenarse impulso (RSI={asset_rsi:.1f})"
                 )
             elif unr_pct <= -sl_target:
+                exit_reason = f"[Auto-SL {sym} -{sl_target:.2f}%] Cierre defensivo en {unr_pct:+.2f}%"
+            elif (
+                hold_sec >= 18
+                and best_unheld_opp
+                and (
+                    (best_unheld_opp["opportunity_score"] - current_score) >= 8.5
+                    or (sma_diff < -1.2 and current_score < 56.0)
+                )
+            ):
+                new_sym = best_unheld_opp["symbol"]
                 exit_reason = (
-                    f"[Auto-SL {held_book.split('_')[0].upper()} -{sl_target:.2f}%] "
-                    f"Cierre defensivo en {unr_pct:+.2f}%"
+                    f"[Rotación Dinámica: {sym} → {new_sym}] {sym} perdió fuerza (Score {current_score:.1f}) "
+                    f"frente a {new_sym} (Score {best_unheld_opp['opportunity_score']:.1f})"
                 )
 
             if exit_reason:
@@ -224,7 +343,7 @@ async def run_bot_cycle(
                     side="SELL",
                     ticker=tickers_cache[held_book],
                     crypto_amount=qty,
-                    source="BOT:SCALPER",
+                    source="BOT:ROTADOR",
                     reason=exit_reason,
                     confidence=0.96,
                 )
@@ -232,17 +351,12 @@ async def run_bot_cycle(
                     bot.last_trade_ts = time.time()
                     last_executed_trade = res["trade"]
 
-        if last_executed_trade and not force:
-            _refresh_opportunities()
-            return {"signal": bot.last_signal, "executed_trade": last_executed_trade}
-
-        # B) Seleccionar el mejor activo del radar para abrir nueva operación de Scalping
-        elapsed = time.time() - bot.last_trade_ts
+        # B) Llenar automáticamente hasta 4 Activos Manejados con las mejores oportunidades del radar
+        portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
+        positions = portfolio.get("positions", {})
         open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
-        total_eq = float(portfolio.get("total_equity_mxn", 100000.0))
-        has_cash_reserve = engine.cash_mxn >= (total_eq * 0.14)
 
-        if (force or elapsed >= bot.cooldown_seconds) and (force or (open_positions_count < 6 and has_cash_reserve)):
+        if open_positions_count < 4 and engine.cash_mxn >= 200.0:
             chosen_opp = None
             if target_book:
                 chosen_opp = next((o for o in opportunities_cache if o["book"] == target_book), None)
@@ -252,30 +366,37 @@ async def run_bot_cycle(
                     already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
                     if (
                         not already_held
-                        and opp["opportunity_score"] >= 57.0
+                        and opp["opportunity_score"] >= 54.0
                         and float(opp.get("spread_bps", 99.0)) <= 18.0
-                        and float(opp.get("sma_diff_bps", 0.0)) >= -1.2
                     ):
                         chosen_opp = opp
                         break
 
-            if chosen_opp and engine.cash_mxn >= 100.0:
+            if chosen_opp:
                 b = chosen_opp["book"]
-                mxn_to_spend = engine.cash_mxn * (bot.trade_size_pct / 100.0)
-                if mxn_to_spend >= 50.0 and b in tickers_cache:
+                # Asignar equitativamente el efectivo entre los slots vacíos de los 4 activos manejados
+                slots_remaining = max(1, 4 - open_positions_count)
+                mxn_to_spend = min(
+                    engine.cash_mxn * 0.94,
+                    max(engine.cash_mxn / slots_remaining * 0.92, engine.cash_mxn * (bot.trade_size_pct / 100.0)),
+                )
+                if mxn_to_spend >= 100.0 and b in tickers_cache:
+                    # Poblar serie histórica del activo si aún tiene pocos puntos
+                    if len(price_history_by_book.get(b, [])) < 5:
+                        await _seed_book_history(b)
                     conf = round(min(0.98, chosen_opp["opportunity_score"] / 100.0), 2)
                     auto_tp = chosen_opp["auto_tp_pct"]
                     auto_sl = chosen_opp["auto_sl_pct"]
                     reason = (
-                        f"[Scalp Score {chosen_opp['opportunity_score']} | Auto-TP +{auto_tp}% / SL -{auto_sl}%] "
-                        f"{chosen_opp['setup_type']}: {chosen_opp['rationale']}"
+                        f"[Auto-Selección Top 4 ({chosen_opp['category']}) | Score {chosen_opp['opportunity_score']} | "
+                        f"TP +{auto_tp}% / SL -{auto_sl}%] {chosen_opp['setup_type']}: {chosen_opp['rationale']}"
                     )
                     res = engine.execute_order(
                         book=b,
                         side="BUY",
                         ticker=tickers_cache[b],
                         mxn_amount=mxn_to_spend,
-                        source="BOT:SCALPER",
+                        source="BOT:AUTO-4",
                         reason=reason,
                         confidence=conf,
                         auto_tp_pct=auto_tp,
@@ -287,7 +408,7 @@ async def run_bot_cycle(
                             "action": "BUY",
                             "confidence": conf,
                             "reason": reason,
-                            "strategy": "multi_asset_scalper",
+                            "strategy": "auto_4_rotator",
                             "timestamp": datetime.now().isoformat(),
                             "features": bot.extract_features(
                                 price_history_by_book.get(b, []),
@@ -300,7 +421,11 @@ async def run_bot_cycle(
                         _refresh_opportunities()
                         return {"signal": bot.last_signal, "executed_trade": res["trade"]}
 
-    # 2. Evaluación sobre el libro seleccionado
+        if last_executed_trade:
+            _refresh_opportunities()
+            return {"signal": bot.last_signal, "executed_trade": last_executed_trade}
+
+    # Evaluación sobre el libro activo
     book = target_book or bot.book
     ticker = tickers_cache.get(book) or await bitso.get_ticker(book)
     if not ticker:
@@ -312,7 +437,6 @@ async def run_bot_cycle(
 
     pos = positions.get(book, {"amount": 0.0, "unrealized_pnl_pct": 0.0})
     hist = price_history_by_book.get(book, [])
-
     signal = bot.evaluate(
         price_history=hist,
         ticker=ticker,
@@ -322,60 +446,53 @@ async def run_bot_cycle(
         force=force,
     )
 
-    action = force_trade_side.upper() if force_trade_side in ("BUY", "SELL") else signal["action"]
-    reason = (
-        f"[Prueba Manual Bot ({bot.strategy})] {signal['reason']}"
-        if force_trade_side
-        else signal["reason"]
-    )
-
     executed_trade = None
-    if action == "BUY":
-        mxn_to_spend = engine.cash_mxn * (bot.trade_size_pct / 100.0)
-        if mxn_to_spend >= 15.0:
-            opp_info = opp_by_book.get(book, {})
+    if force_trade_side in ("BUY", "SELL"):
+        action = force_trade_side.upper()
+        opp_info = opp_by_book.get(book, {})
+        if action == "BUY":
+            mxn_to_spend = engine.cash_mxn * (bot.trade_size_pct / 100.0)
             res = engine.execute_order(
                 book=book,
                 side="BUY",
                 ticker=ticker,
                 mxn_amount=mxn_to_spend,
-                source=f"BOT:{bot.strategy.upper()}",
-                reason=reason,
+                source="BOT:MANUAL-STEP",
+                reason=signal["reason"],
                 confidence=signal["confidence"],
                 auto_tp_pct=opp_info.get("auto_tp_pct"),
                 auto_sl_pct=opp_info.get("auto_sl_pct"),
             )
             if res.get("success"):
-                bot.last_trade_ts = time.time()
                 executed_trade = res["trade"]
-    elif action == "SELL":
-        qty_held = float(pos.get("amount", 0.0))
-        if qty_held > 1e-8:
-            res = engine.execute_order(
-                book=book,
-                side="SELL",
-                ticker=ticker,
-                crypto_amount=qty_held,
-                source=f"BOT:{bot.strategy.upper()}",
-                reason=reason,
-                confidence=signal["confidence"],
-            )
-            if res.get("success"):
-                bot.last_trade_ts = time.time()
-                executed_trade = res["trade"]
+        elif action == "SELL":
+            qty_held = float(pos.get("amount", 0.0))
+            if qty_held > 1e-8:
+                res = engine.execute_order(
+                    book=book,
+                    side="SELL",
+                    ticker=ticker,
+                    crypto_amount=qty_held,
+                    source="BOT:MANUAL-STEP",
+                    reason=signal["reason"],
+                    confidence=signal["confidence"],
+                )
+                if res.get("success"):
+                    executed_trade = res["trade"]
 
     _refresh_opportunities()
     return {"signal": signal, "executed_trade": executed_trade}
 
 
 async def market_polling_loop() -> None:
-    """Bucle de alta frecuencia (cada 2.0 segundos) para Scalping rápido en 24 activos."""
+    """Bucle autónomo cada 2.0 segundos que escanea 39 activos (Cripto, Acciones, Futuros, FX, Oro)."""
     while True:
         try:
             snap = await bitso.get_all_tickers_snapshot()
             if snap["tickers"]:
                 tickers_cache.update(snap["tickers"])
                 raw_books_cache.update(snap["raw_by_book"])
+                _sync_yahoo_histories(snap.get("yf_series", {}))
                 for b, tk in snap["tickers"].items():
                     _append_price_point(b, float(tk["last"]))
 
@@ -387,19 +504,15 @@ async def market_polling_loop() -> None:
 
             if bot.enabled:
                 await run_bot_cycle(force=False)
-            else:
-                book = active_book
-                if book in tickers_cache:
-                    portfolio = engine.get_summary(tickers_cache, active_book=book)
-                    pos = portfolio["positions"].get(book, {"amount": 0.0, "unrealized_pnl_pct": 0.0})
-                    bot.evaluate(
-                        price_history=price_history_by_book.get(book, []),
-                        ticker=tickers_cache[book],
-                        order_book=order_book_cache.get(book, {"imbalance": 0.5}),
-                        position=pos,
-                        cash_mxn=engine.cash_mxn,
-                        force=False,
-                    )
+
+            # Asegurar que los 4 activos manejados tengan su historial poblado para mostrar los 4 gráficos
+            opp_by_book = {o["book"]: o for o in opportunities_cache}
+            portfolio_summary = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
+            managed_4 = _build_managed_4_assets(portfolio_summary, opp_by_book)
+            for item in managed_4:
+                b = item["book"]
+                if len(price_history_by_book.get(b, [])) < 5:
+                    await _seed_book_history(b)
 
             await broadcast_state()
         except Exception as exc:
@@ -424,20 +537,31 @@ async def keep_alive_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if os.environ.get("AUTO_START_BOT", "true").lower() in ("1", "true", "yes"):
-        bot.enabled = True
-        bot.multi_asset_auto = True
-        bot.auto_tp_sl_by_coin = True
+    bot.enabled = True
+    bot.multi_asset_auto = True
+    bot.auto_tp_sl_by_coin = True
 
     snap = await bitso.get_all_tickers_snapshot()
     tickers_cache.update(snap["tickers"])
     raw_books_cache.update(snap["raw_by_book"])
+    _sync_yahoo_histories(snap.get("yf_series", {}))
     for b, tk in snap["tickers"].items():
         _append_price_point(b, float(tk["last"]))
 
-    await _seed_book_history("btc_mxn")
+    # Sembrar historial de los primeros libros principales en paralelo
+    await asyncio.gather(
+        _seed_book_history("btc_mxn"),
+        _seed_book_history("eth_mxn"),
+        _seed_book_history("sol_mxn"),
+        _seed_book_history("xrp_mxn"),
+        return_exceptions=True,
+    )
     order_book_cache["btc_mxn"] = await bitso.get_order_book("btc_mxn", top_n=10)
     _refresh_opportunities()
+
+    # Seleccionar automáticamente las primeras 4 mejores oportunidades al arrancar
+    for _ in range(4):
+        await run_bot_cycle(force=True)
 
     task = asyncio.create_task(market_polling_loop())
     keep_alive_task = asyncio.create_task(keep_alive_loop())
@@ -448,9 +572,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Bitso High-Frequency Scalping & Multi-Asset AI Scanner",
-    description="Simulador de Scalping con TP/SL automatizados por moneda y Balance Contable de Ganancias vs Pérdidas.",
-    version="3.0.0",
+    title="Bitso & Global Markets Autonomous 4-Asset Rotator",
+    description="Gestión autónoma de 4 activos con rotación dinámica en Cripto, Acciones, Futuros, Oro y Divisas.",
+    version="4.0.0",
     lifespan=lifespan,
 )
 
@@ -495,6 +619,29 @@ async def export_trades() -> Response:
     )
 
 
+@app.post("/api/rotate/{book_to_sell}")
+async def rotate_single_asset(book_to_sell: str) -> Dict[str, Any]:
+    """Vende inmediatamente el activo indicado y lo reemplaza por la mejor oportunidad disponible."""
+    opp_by_book = {o["book"]: o for o in opportunities_cache}
+    portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
+    pos = portfolio.get("positions", {}).get(book_to_sell, {})
+    qty = float(pos.get("amount", 0.0))
+    if qty > 1e-8 and book_to_sell in tickers_cache:
+        sym = ASSET_CATALOG.get(book_to_sell, {}).get("symbol", book_to_sell.upper())
+        engine.execute_order(
+            book=book_to_sell,
+            side="SELL",
+            ticker=tickers_cache[book_to_sell],
+            crypto_amount=qty,
+            source="BOT:ROTADOR",
+            reason=f"[Rotación Directa] Reemplazando {sym} por mejor oportunidad del radar",
+            confidence=0.95,
+        )
+    await run_bot_cycle(force=True)
+    await broadcast_state()
+    return build_state_payload()
+
+
 @app.post("/api/book")
 async def switch_book(req: SwitchBookRequest) -> Dict[str, Any]:
     global active_book
@@ -514,7 +661,7 @@ async def place_order(req: OrderRequest) -> Dict[str, Any]:
     book = req.book if req.book in SUPPORTED_BOOKS else active_book
     ticker = tickers_cache.get(book) or await bitso.get_ticker(book)
     if not ticker:
-        raise HTTPException(status_code=503, detail="No se pudo obtener el precio actual de Bitso.")
+        raise HTTPException(status_code=503, detail="No se pudo obtener el precio actual.")
 
     opp_info = next((o for o in opportunities_cache if o["book"] == book), {})
     result = engine.execute_order(
@@ -557,6 +704,9 @@ async def step_bot(req: ForceBotStepRequest) -> Dict[str, Any]:
 async def reset_portfolio(req: ResetPortfolioRequest) -> Dict[str, Any]:
     engine.reset(initial_cash_mxn=req.initial_cash_mxn, fee_rate=req.fee_rate, clear_history=req.clear_history)
     _refresh_opportunities()
+    if bot.enabled and bot.multi_asset_auto:
+        for _ in range(4):
+            await run_bot_cycle(force=True)
     await broadcast_state()
     return build_state_payload()
 
