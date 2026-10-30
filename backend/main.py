@@ -311,40 +311,42 @@ async def run_bot_cycle(
 
             exit_reason = None
 
-            # 1. Take Profit Principal
+            # 1. Take Profit Principal Automatizado
             if unr_pct >= tp_target:
                 exit_reason = f"[Sniper TP Ganador] {sym} alcanzó meta de +{unr_pct:.2f}% (Target: +{tp_target:.2f}%)"
 
-            # 2. Trailing Profit Lock (Asegura cuando sube >= trail_arm)
-            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.05:
+            # 2. Trailing Profit Lock: Asegura ganancia cuando sube y empieza a retroceder
+            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.04:
                 exit_reason = (
                     f"[Trailing Profit Asegurado] {sym} aseguró +{unr_pct:.2f}% "
                     f"(pico +{peak_pct:.2f}%)"
                 )
 
             # 3. Breakeven Shield: Si ya tocó +0.18%, prohíbe que caiga a negativo
-            elif peak_pct >= 0.18 and unr_pct <= 0.02 and unr_pct >= -0.05:
-                exit_reason = f"[Breakeven Shield] {sym} protegido sin pérdidas (+{unr_pct:.2f}%) tras no superar resistencia"
+            elif peak_pct >= 0.18 and unr_pct <= 0.02 and unr_pct >= -0.04:
+                exit_reason = f"[Breakeven Shield] {sym} protegido sin pérdidas (+{unr_pct:.2f}%)"
 
-            # 4. Toma de ganancia rápida en verde si llega a resistencia clara
-            elif unr_pct >= 0.16 and asset_rsi >= 66.0 and hold_sec >= 45:
+            # 4. Toma de ganancia temprana en verde si llega a resistencia clara
+            elif unr_pct >= 0.14 and asset_rsi >= 65.0 and hold_sec >= 40:
                 exit_reason = f"[Scalp Verde en Resistencia] {sym} cobró +{unr_pct:.2f}% al llegar a sobrecompra (RSI={asset_rsi:.1f})"
 
-            # 5. Stop Loss Estricto (con margen para fluctuación sana)
+            # 5. Stop Loss Estricto (corte defensivo final si el mercado cae)
             elif unr_pct <= -sl_target:
                 exit_reason = f"[Stop Loss Controlado] {sym} cortó pérdida en {unr_pct:+.2f}% (SL: -{sl_target:.2f}%)"
 
-            # 6. Rotación Inteligente: Solo después del tiempo de maduración (150 segundos) y si hay un reemplazo A+
+            # 6. Rotación por Oportunidad Superior: ESTRICTAMENTE PROHIBIDO VENDER EN ROJO/PÉRDIDA
+            # Solo se permite rotar si la posición ya está en VERDE (ganancia neta > 0) Y lleva más de 5 minutos
             elif (
-                hold_sec >= getattr(bot, "min_hold_seconds", 150)
+                unr_pct >= 0.08
+                and hold_sec >= 300
                 and best_unheld_opp
-                and (best_unheld_opp["opportunity_score"] - current_score) >= 16.0
-                and best_unheld_opp["opportunity_score"] >= 72.0
+                and (best_unheld_opp["opportunity_score"] - current_score) >= 20.0
+                and best_unheld_opp["opportunity_score"] >= 78.0
             ):
                 new_sym = best_unheld_opp["symbol"]
                 exit_reason = (
-                    f"[Rotación A+: {sym} → {new_sym}] {sym} agotó impulso ({hold_sec}s, Score {current_score:.1f}) "
-                    f"sustituido por {new_sym} (Score {best_unheld_opp['opportunity_score']:.1f})"
+                    f"[Rotación con Ganancia: {sym} → {new_sym}] Cobró +{unr_pct:.2f}% ({hold_sec}s) "
+                    f"para entrar a nuevo líder {new_sym} (Score {best_unheld_opp['opportunity_score']:.1f})"
                 )
 
             if exit_reason:
