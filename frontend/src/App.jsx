@@ -28,6 +28,7 @@ import {
   Sliders,
   DollarSign,
   Maximize2,
+  Minimize2,
   ShieldCheck,
   Columns,
   Grid,
