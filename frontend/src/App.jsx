@@ -160,6 +160,50 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [])
 
+  const catalog = state?.asset_catalog || {}
+  const portfolio = state?.portfolio || {}
+  const managed4 = state?.managed_4_assets || []
+  const pnlBalance = portfolio.pnl_balance || {
+    total_transactions: 0,
+    winning_count: 0,
+    losing_count: 0,
+    win_rate_pct: 0,
+    gross_profit_mxn: 0,
+    gross_loss_mxn: 0,
+    net_realized_pnl_mxn: 0,
+    profit_factor: 0,
+    by_book: [],
+  }
+  const bot = state?.bot || {}
+  const opportunities = state?.opportunities || []
+  const openPositionsList = Object.values(portfolio.positions || {}).filter((p) => p.amount > 1e-8)
+
+  const fullscreenAsset = useMemo(() => {
+    if (!fullscreenBook || !state) return null
+    const fromManaged = managed4.find((m) => m.book === fullscreenBook)
+    if (fromManaged) return fromManaged
+    const tk = state?.tickers?.[fullscreenBook] || {}
+    const pos = portfolio?.positions?.[fullscreenBook] || {}
+    const opp = opportunities.find((o) => o.book === fullscreenBook) || {}
+    const meta = catalog[fullscreenBook] || { name: fullscreenBook.toUpperCase(), symbol: fullscreenBook.toUpperCase() }
+    return {
+      book: fullscreenBook,
+      name: meta.name || fullscreenBook.toUpperCase(),
+      symbol: meta.symbol || fullscreenBook.split('_')[0].toUpperCase(),
+      category: meta.category || 'Activo',
+      last_price: Number(tk.last || 0),
+      change_24_pct: Number(tk.change_24_pct || 0),
+      rsi_14: Number(opp.rsi_14 || 50),
+      auto_tp_pct: Number(opp.auto_tp_pct || 0.90),
+      auto_sl_pct: Number(opp.auto_sl_pct || 0.45),
+      tp_price: Number(opp.auto_tp_pct ? tk.last * (1 + opp.auto_tp_pct / 100) : 0),
+      sl_price: Number(opp.auto_sl_pct ? tk.last * (1 - opp.auto_sl_pct / 100) : 0),
+      price_history: state?.price_history_by_book?.[fullscreenBook] || state?.price_history || [],
+      position: pos,
+      is_active_position: Boolean(pos.amount && pos.amount > 1e-8),
+    }
+  }, [fullscreenBook, managed4, state, portfolio, opportunities, catalog])
+
   const handleToggleFullscreen = (book) => {
     if (fullscreenBook) {
       setFullscreenBook(null)
@@ -242,50 +286,6 @@ export default function App() {
       </div>
     )
   }
-
-  const catalog = state.asset_catalog || {}
-  const portfolio = state.portfolio || {}
-  const managed4 = state.managed_4_assets || []
-  const pnlBalance = portfolio.pnl_balance || {
-    total_transactions: 0,
-    winning_count: 0,
-    losing_count: 0,
-    win_rate_pct: 0,
-    gross_profit_mxn: 0,
-    gross_loss_mxn: 0,
-    net_realized_pnl_mxn: 0,
-    profit_factor: 0,
-    by_book: [],
-  }
-  const bot = state.bot || {}
-  const opportunities = state.opportunities || []
-  const openPositionsList = Object.values(portfolio.positions || {}).filter((p) => p.amount > 1e-8)
-
-  const fullscreenAsset = useMemo(() => {
-    if (!fullscreenBook) return null
-    const fromManaged = managed4.find((m) => m.book === fullscreenBook)
-    if (fromManaged) return fromManaged
-    const tk = state?.tickers?.[fullscreenBook] || {}
-    const pos = portfolio?.positions?.[fullscreenBook] || {}
-    const opp = opportunities.find((o) => o.book === fullscreenBook) || {}
-    const meta = catalog[fullscreenBook] || { name: fullscreenBook.toUpperCase(), symbol: fullscreenBook.toUpperCase() }
-    return {
-      book: fullscreenBook,
-      name: meta.name || fullscreenBook.toUpperCase(),
-      symbol: meta.symbol || fullscreenBook.split('_')[0].toUpperCase(),
-      category: meta.category || 'Activo',
-      last_price: Number(tk.last || 0),
-      change_24_pct: Number(tk.change_24_pct || 0),
-      rsi_14: Number(opp.rsi_14 || 50),
-      auto_tp_pct: Number(opp.auto_tp_pct || 0.90),
-      auto_sl_pct: Number(opp.auto_sl_pct || 0.45),
-      tp_price: Number(opp.auto_tp_pct ? tk.last * (1 + opp.auto_tp_pct / 100) : 0),
-      sl_price: Number(opp.auto_sl_pct ? tk.last * (1 - opp.auto_sl_pct / 100) : 0),
-      price_history: state?.price_history_by_book?.[fullscreenBook] || state?.price_history || [],
-      position: pos,
-      is_active_position: Boolean(pos.amount && pos.amount > 1e-8),
-    }
-  }, [fullscreenBook, managed4, state, portfolio, opportunities, catalog])
 
   const handleUpdateBot = async (patch) => {
     try {
