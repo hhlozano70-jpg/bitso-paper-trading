@@ -44,17 +44,19 @@ export default function ProChartStudio({
   onRotate,
   availableCash = 100000,
   isFocusMode = false,
+  isFullscreen = false,
   onToggleFocus,
+  onToggleFullscreen,
 }) {
   const [chartMode, setChartMode] = useState('candles') // 'candles' | 'area'
   const [showVWAP, setShowVWAP] = useState(true)
   const [showEMA, setShowEMA] = useState(true)
   const [showBollinger, setShowBollinger] = useState(isFocusMode)
   const [showVolume, setShowVolume] = useState(true)
-  const [showRSI, setShowRSI] = useState(isFocusMode)
+  const [showRSI, setShowRSI] = useState(true)
   const [hoverIndex, setHoverIndex] = useState(null)
   const [quickSizePct, setQuickSizePct] = useState(50)
-  const [showDOM, setShowDOM] = useState(isFocusMode)
+  const [showDOM, setShowDOM] = useState(isFocusMode || isFullscreen)
 
   const isHeld = Boolean(asset.is_active_position)
   const pos = asset.position || {}
@@ -93,14 +95,18 @@ export default function ProChartStudio({
     return list
   }, [rawHistory])
 
-  // Dimensiones del lienzo SVG
-  const width = isFocusMode ? 720 : 380
-  const height = isFocusMode ? 260 : 135
-  const padLeft = 52
+  // Dimensiones del lienzo SVG optimizadas para gráficos grandes y pantalla completa
+  const width = isFullscreen ? 1440 : isFocusMode ? 1040 : 500
+  const height = isFullscreen ? 540 : isFocusMode ? 400 : 210
+  const padLeft = isFullscreen ? 66 : 52
   const padRight = 14
-  const padTop = 14
-  const rsiHeight = showRSI ? 38 : 0
+  const padTop = 16
+  const rsiHeight = showRSI ? (isFullscreen ? 64 : 42) : 0
   const padBottom = 22 + rsiHeight
+
+  const maxVol = useMemo(() => {
+    return Math.max(1, ...candles.map((c) => c.volume || 1))
+  }, [candles])
 
   const plotW = width - padLeft - padRight
   const plotH = height - padTop - padBottom
@@ -338,6 +344,29 @@ export default function ProChartStudio({
               {isFocusMode ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
             </button>
           )}
+
+          {onToggleFullscreen && (
+            <button
+              style={{
+                background: isFullscreen ? '#38bdf8' : 'rgba(56,189,248,0.18)',
+                color: isFullscreen ? '#04121e' : '#38bdf8',
+                border: '1px solid rgba(56,189,248,0.3)',
+                borderRadius: 5,
+                padding: '3px 8px',
+                fontSize: '0.68rem',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+              }}
+              onClick={() => onToggleFullscreen(asset.book)}
+              title={isFullscreen ? 'Salir de Pantalla Completa' : 'Ver a Pantalla Completa (F11)'}
+            >
+              {isFullscreen ? <Minimize2 size={13} /> : <Maximize2 size={13} />}
+              <span>{isFullscreen ? 'Salir Fullscreen' : 'Pantalla Completa'}</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -418,6 +447,25 @@ export default function ProChartStudio({
             <line x1={padLeft} y1={padTop} x2={width - padRight} y2={padTop} stroke="rgba(255,255,255,0.04)" strokeDasharray="2 3" />
             <line x1={padLeft} y1={padTop + plotH * 0.5} x2={width - padRight} y2={padTop + plotH * 0.5} stroke="rgba(255,255,255,0.04)" strokeDasharray="2 3" />
             <line x1={padLeft} y1={padTop + plotH} x2={width - padRight} y2={padTop + plotH} stroke="rgba(255,255,255,0.08)" />
+
+            {/* BARRAS DE HISTOGRAMA DE VOLUMEN */}
+            {showVolume &&
+              candles.map((c, i) => {
+                const x = getX(i)
+                const vH = Math.max(1, (c.volume / maxVol) * (plotH * 0.22))
+                const vY = padTop + plotH - vH
+                const isBull = c.close >= c.open
+                return (
+                  <rect
+                    key={`vol-${i}`}
+                    x={x - candleW / 2}
+                    y={vY}
+                    width={candleW}
+                    height={vH}
+                    fill={isBull ? 'rgba(16,185,129,0.22)' : 'rgba(244,63,94,0.22)'}
+                  />
+                )
+              })}
 
             {/* MODO VELAS JAPONESAS */}
             {chartMode === 'candles' ? (
@@ -523,14 +571,18 @@ export default function ProChartStudio({
               </g>
             )}
 
-            {/* SUB-PANEL RSI(14) EN LA BASE */}
+            {/* SUB-PANEL RSI(14) EN LA BASE CON NIVEL 50 */}
             {showRSI && (
               <g transform={`translate(0, ${padTop + plotH + 8})`}>
                 <line x1={padLeft} y1="0" x2={width - padRight} y2="0" stroke="rgba(255,255,255,0.1)" />
-                {/* Zona de Sobrecompra (70) y Sobreventa (30) */}
+                {/* Zona de Sobrecompra (70) */}
                 <line x1={padLeft} y1="8" x2={width - padRight} y2="8" stroke="#f43f5e" strokeDasharray="2 2" opacity="0.6" />
-                <line x1={padLeft} y1="26" x2={width - padRight} y2="26" stroke="#10b981" strokeDasharray="2 2" opacity="0.6" />
                 <text x={padLeft - 4} y="11" fill="#f43f5e" fontSize="7" textAnchor="end">70</text>
+                {/* Nivel 50 Central (Regla Institucional: Recuperar o Perder nivel 50) */}
+                <line x1={padLeft} y1="17" x2={width - padRight} y2="17" stroke="#38bdf8" strokeDasharray="3 3" opacity="0.75" />
+                <text x={padLeft - 4} y="20" fill="#38bdf8" fontSize="7.5" fontWeight="700" textAnchor="end">50</text>
+                {/* Zona de Sobreventa (30) */}
+                <line x1={padLeft} y1="26" x2={width - padRight} y2="26" stroke="#10b981" strokeDasharray="2 2" opacity="0.6" />
                 <text x={padLeft - 4} y="29" fill="#10b981" fontSize="7" textAnchor="end">30</text>
                 {/* Curva RSI */}
                 <path
@@ -544,19 +596,25 @@ export default function ProChartStudio({
                     .join(' ')}
                   fill="none"
                   stroke="#f59e0b"
-                  strokeWidth="1.3"
+                  strokeWidth="1.5"
                 />
               </g>
             )}
 
-            {/* CROSSHAIR INTERACTIVO EN HOVER */}
+            {/* CROSSHAIR INTERACTIVO EN HOVER CON DETALLE OHLC */}
             {activeHover && (
               <g>
                 <line x1={getX(hoverIndex)} y1={padTop} x2={getX(hoverIndex)} y2={padTop + plotH} stroke="#fff" strokeWidth="0.8" strokeDasharray="2 2" opacity="0.7" />
                 <line x1={padLeft} y1={getY(activeHover.close)} x2={width - padRight} y2={getY(activeHover.close)} stroke="#fff" strokeWidth="0.8" strokeDasharray="2 2" opacity="0.7" />
-                <rect x={padLeft - 48} y={getY(activeHover.close) - 7} width="46" height="14" fill="#1e293b" rx="2" />
-                <text x={padLeft - 3} y={getY(activeHover.close) + 3} textAnchor="end" fill="#fff" fontSize="8" fontWeight="700">
+                {/* Badge precio en eje Y */}
+                <rect x={padLeft - 54} y={getY(activeHover.close) - 8} width="52" height="16" fill="#1e293b" rx="2" stroke="#38bdf8" strokeWidth="0.8" />
+                <text x={padLeft - 4} y={getY(activeHover.close) + 4} textAnchor="end" fill="#fff" fontSize="8.5" fontWeight="700">
                   {fmtMXN(activeHover.close, 1)}
+                </text>
+                {/* Detalle OHLC superior interactivo */}
+                <rect x={padLeft + 4} y={padTop + 2} width={isFullscreen ? 560 : 390} height="20" fill="rgba(7,11,20,0.88)" rx="4" stroke="rgba(255,255,255,0.12)" />
+                <text x={padLeft + 10} y={padTop + 16} fill="#f1f5f9" fontSize={isFullscreen ? 11 : 9} fontFamily="monospace" fontWeight="600">
+                  O: {fmtMXN(activeHover.open, 1)} | H: {fmtMXN(activeHover.high, 1)} | L: {fmtMXN(activeHover.low, 1)} | C: {fmtMXN(activeHover.close, 1)} | Vol: {activeHover.volume}
                 </text>
               </g>
             )}

@@ -140,6 +140,7 @@ export default function App() {
   const [statusBanner, setStatusBanner] = useState(null)
   const [busy, setBusy] = useState(false)
   const [workspaceLayout, setWorkspaceLayout] = useState('quad') // 'quad' | 'dual' | 'focus'
+  const [fullscreenBook, setFullscreenBook] = useState(null)
   const [focusedAssetIndex, setFocusedAssetIndex] = useState(0)
   const [showRiskCalculator, setShowRiskCalculator] = useState(false)
   const [showRealMoneyModal, setShowRealMoneyModal] = useState(false)
@@ -148,6 +149,24 @@ export default function App() {
   const [checklistData, setChecklistData] = useState(null)
   const [riskAmountMXN, setRiskAmountMXN] = useState(150)
   const wsRef = useRef(null)
+
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        setFullscreenBook(null)
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [])
+
+  const handleToggleFullscreen = (book) => {
+    if (fullscreenBook) {
+      setFullscreenBook(null)
+    } else {
+      setFullscreenBook(book || managed4[focusedAssetIndex]?.book || 'btc_mxn')
+    }
+  }
 
   const fetchChecklist = async (bookToFetch) => {
     const b = bookToFetch || selectedChecklistBook || 'btc_mxn'
@@ -241,6 +260,32 @@ export default function App() {
   const bot = state.bot || {}
   const opportunities = state.opportunities || []
   const openPositionsList = Object.values(portfolio.positions || {}).filter((p) => p.amount > 1e-8)
+
+  const fullscreenAsset = useMemo(() => {
+    if (!fullscreenBook) return null
+    const fromManaged = managed4.find((m) => m.book === fullscreenBook)
+    if (fromManaged) return fromManaged
+    const tk = state?.tickers?.[fullscreenBook] || {}
+    const pos = portfolio?.positions?.[fullscreenBook] || {}
+    const opp = opportunities.find((o) => o.book === fullscreenBook) || {}
+    const meta = catalog[fullscreenBook] || { name: fullscreenBook.toUpperCase(), symbol: fullscreenBook.toUpperCase() }
+    return {
+      book: fullscreenBook,
+      name: meta.name || fullscreenBook.toUpperCase(),
+      symbol: meta.symbol || fullscreenBook.split('_')[0].toUpperCase(),
+      category: meta.category || 'Activo',
+      last_price: Number(tk.last || 0),
+      change_24_pct: Number(tk.change_24_pct || 0),
+      rsi_14: Number(opp.rsi_14 || 50),
+      auto_tp_pct: Number(opp.auto_tp_pct || 0.90),
+      auto_sl_pct: Number(opp.auto_sl_pct || 0.45),
+      tp_price: Number(opp.auto_tp_pct ? tk.last * (1 + opp.auto_tp_pct / 100) : 0),
+      sl_price: Number(opp.auto_sl_pct ? tk.last * (1 - opp.auto_sl_pct / 100) : 0),
+      price_history: state?.price_history_by_book?.[fullscreenBook] || state?.price_history || [],
+      position: pos,
+      is_active_position: Boolean(pos.amount && pos.amount > 1e-8),
+    }
+  }, [fullscreenBook, managed4, state, portfolio, opportunities, catalog])
 
   const handleUpdateBot = async (patch) => {
     try {
@@ -1056,6 +1101,25 @@ export default function App() {
             >
               <Square size={13} /> Foco Total (1)
             </button>
+            <button
+              style={{
+                background: fullscreenBook ? '#10b981' : 'rgba(16,185,129,0.15)',
+                color: fullscreenBook ? '#041d15' : '#10b981',
+                border: '1px solid rgba(16,185,129,0.3)',
+                borderRadius: 6,
+                padding: '4px 11px',
+                fontSize: '0.74rem',
+                fontWeight: 800,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 5,
+              }}
+              onClick={() => handleToggleFullscreen(managed4[focusedAssetIndex]?.book || 'btc_mxn')}
+              title="Expandir a Pantalla Completa Total (F11 / ESC)"
+            >
+              <Maximize2 size={13} /> Pantalla Completa (F11)
+            </button>
           </div>
         </div>
 
@@ -1091,6 +1155,7 @@ export default function App() {
                 availableCash={portfolio.cash_mxn}
                 isFocusMode={true}
                 onToggleFocus={() => setWorkspaceLayout('quad')}
+                onToggleFullscreen={handleToggleFullscreen}
               />
             )}
           </div>
@@ -1110,6 +1175,7 @@ export default function App() {
                   setFocusedAssetIndex(managed4.findIndex((m) => m.book === asset.book))
                   setWorkspaceLayout('focus')
                 }}
+                onToggleFullscreen={handleToggleFullscreen}
               />
             ))}
           </div>
@@ -1129,11 +1195,142 @@ export default function App() {
                   setFocusedAssetIndex(idx)
                   setWorkspaceLayout('focus')
                 }}
+                onToggleFullscreen={handleToggleFullscreen}
               />
             ))}
           </div>
         )}
       </section>
+
+      {/* =====================================================================
+          MODO PANTALLA COMPLETA TOTAL (STUDIO ULTRA-DETALLADO A PANTALLA COMPLETA)
+         ===================================================================== */}
+      {fullscreenAsset && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            width: '100vw',
+            height: '100vh',
+            background: '#040711',
+            zIndex: 99999,
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          {/* BARRA SUPERIOR DE PANTALLA COMPLETA */}
+          <div
+            style={{
+              padding: '10px 20px',
+              background: '#070c18',
+              borderBottom: '1px solid rgba(255,255,255,0.08)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: 12,
+            }}
+          >
+            {/* Activo actual + selector rápido */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span className="mono" style={{ fontSize: '1.25rem', fontWeight: 900, color: '#38bdf8' }}>
+                  {fullscreenAsset.symbol}
+                </span>
+                <span style={{ fontSize: '0.85rem', color: '#94a3b8' }}>{fullscreenAsset.name}</span>
+                <span
+                  style={{
+                    padding: '2px 8px',
+                    borderRadius: 4,
+                    fontSize: '0.72rem',
+                    fontWeight: 700,
+                    background: fullscreenAsset.change_24_pct >= 0 ? 'rgba(16,185,129,0.2)' : 'rgba(244,63,94,0.2)',
+                    color: fullscreenAsset.change_24_pct >= 0 ? '#10b981' : '#f43f5e',
+                  }}
+                >
+                  {fullscreenAsset.change_24_pct >= 0 ? '+' : ''}{fullscreenAsset.change_24_pct}%
+                </span>
+              </div>
+
+              {/* Selector de activos en Fullscreen */}
+              <div style={{ display: 'flex', gap: 4, overflowX: 'auto' }}>
+                {managed4.map((m) => (
+                  <button
+                    key={m.book}
+                    style={{
+                      background: fullscreenBook === m.book ? '#38bdf8' : '#0a101f',
+                      color: fullscreenBook === m.book ? '#04121e' : '#cbd5e1',
+                      border: `1px solid ${fullscreenBook === m.book ? '#38bdf8' : 'rgba(255,255,255,0.06)'}`,
+                      borderRadius: 5,
+                      padding: '4px 10px',
+                      fontSize: '0.72rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => setFullscreenBook(m.book)}
+                  >
+                    {m.symbol}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Checklist rápido de las 6 reglas en pantalla completa */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.72rem' }}>
+              <span style={{ color: '#94a3b8' }}>Estrategia Institucional:</span>
+              <span
+                style={{
+                  padding: '3px 8px',
+                  borderRadius: 5,
+                  background: 'rgba(16,185,129,0.18)',
+                  color: '#10b981',
+                  fontWeight: 800,
+                }}
+              >
+                Ratio 1:2 (TP +{fullscreenAsset.auto_tp_pct}% / SL -{fullscreenAsset.auto_sl_pct}%)
+              </span>
+            </div>
+
+            {/* Botón Salir Fullscreen */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button
+                className="btn btn-secondary"
+                style={{
+                  padding: '6px 14px',
+                  background: 'rgba(244,63,94,0.2)',
+                  borderColor: '#f43f5e',
+                  color: '#fff',
+                  fontWeight: 800,
+                  fontSize: '0.78rem',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 6,
+                }}
+                onClick={() => setFullscreenBook(null)}
+              >
+                <Minimize2 size={15} /> Salir de Pantalla Completa (ESC)
+              </button>
+            </div>
+          </div>
+
+          {/* CUERPO PRINCIPAL DEL MODO PANTALLA COMPLETA */}
+          <div style={{ flex: 1, padding: 14, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+            <ProChartStudio
+              asset={fullscreenAsset}
+              orderBook={state.order_book}
+              onQuickBuy={handleQuickBuy}
+              onQuickSell={handleQuickSell}
+              onRotate={handleRotateAsset}
+              availableCash={portfolio.cash_mxn}
+              isFocusMode={true}
+              isFullscreen={true}
+              onToggleFullscreen={() => setFullscreenBook(null)}
+            />
+          </div>
+        </div>
+      )}
 
       {/* =====================================================================
           RADAR DE OPORTUNIDADES EXPANDIDO: 39 ACTIVOS (CRIPTO, ACCIONES, FUTUROS, ORO)
