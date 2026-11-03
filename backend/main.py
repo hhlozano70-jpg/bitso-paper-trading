@@ -781,12 +781,33 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
 if os.path.isdir(FRONTEND_DIST):
     assets_dir = os.path.join(FRONTEND_DIST, "assets")
-    if os.path.isdir(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
+
+    @app.get("/assets/{asset_file}")
+    async def serve_asset(asset_file: str):
+        file_path = os.path.join(assets_dir, asset_file)
+        if os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Resiliencia de caché: si un navegador externo solicita un hash anterior, servir el bundle actual
+        if asset_file.endswith(".js"):
+            js_files = [f for f in os.listdir(assets_dir) if f.endswith(".js")]
+            if js_files:
+                return FileResponse(os.path.join(assets_dir, js_files[0]), media_type="text/javascript")
+        if asset_file.endswith(".css"):
+            css_files = [f for f in os.listdir(assets_dir) if f.endswith(".css")]
+            if css_files:
+                return FileResponse(os.path.join(assets_dir, css_files[0]), media_type="text/css")
+        raise HTTPException(status_code=404, detail="Asset no encontrado")
 
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         file_path = os.path.join(FRONTEND_DIST, full_path)
         if full_path and os.path.isfile(file_path):
             return FileResponse(file_path)
-        return FileResponse(os.path.join(FRONTEND_DIST, "index.html"))
+        return FileResponse(
+            os.path.join(FRONTEND_DIST, "index.html"),
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
+        )

@@ -144,7 +144,7 @@ export default function App() {
   const [focusedAssetIndex, setFocusedAssetIndex] = useState(0)
   const [showRiskCalculator, setShowRiskCalculator] = useState(false)
   const [showRealMoneyModal, setShowRealMoneyModal] = useState(false)
-  const [showChecklistPanel, setShowChecklistPanel] = useState(true)
+  const [showChecklistPanel, setShowChecklistPanel] = useState(false)
   const [selectedChecklistBook, setSelectedChecklistBook] = useState('btc_mxn')
   const [checklistData, setChecklistData] = useState(null)
   const [riskAmountMXN, setRiskAmountMXN] = useState(150)
