@@ -142,8 +142,25 @@ export default function App() {
   const [workspaceLayout, setWorkspaceLayout] = useState('quad') // 'quad' | 'dual' | 'focus'
   const [focusedAssetIndex, setFocusedAssetIndex] = useState(0)
   const [showRiskCalculator, setShowRiskCalculator] = useState(false)
+  const [showRealMoneyModal, setShowRealMoneyModal] = useState(false)
+  const [showChecklistPanel, setShowChecklistPanel] = useState(true)
+  const [selectedChecklistBook, setSelectedChecklistBook] = useState('btc_mxn')
+  const [checklistData, setChecklistData] = useState(null)
   const [riskAmountMXN, setRiskAmountMXN] = useState(150)
   const wsRef = useRef(null)
+
+  const fetchChecklist = async (bookToFetch) => {
+    const b = bookToFetch || selectedChecklistBook || 'btc_mxn'
+    try {
+      const res = await fetch(`${API_BASE}/api/trend-pullback/checklist?book=${b}`)
+      if (res.ok) {
+        const data = await res.json()
+        setChecklistData(data)
+      }
+    } catch (err) {
+      console.error('Error fetching checklist:', err)
+    }
+  }
 
   const showToast = (type, message) => {
     setStatusBanner({ type, message })
@@ -186,13 +203,17 @@ export default function App() {
       ws.onerror = () => ws.close()
     }
     connectWs()
-    const pollInterval = setInterval(fetchState, 3000)
+    fetchChecklist(selectedChecklistBook)
+    const pollInterval = setInterval(() => {
+      fetchState()
+      fetchChecklist(selectedChecklistBook)
+    }, 3000)
     return () => {
       clearInterval(pollInterval)
       if (reconnectTimer) clearTimeout(reconnectTimer)
       if (wsRef.current) wsRef.current.close()
     }
-  }, [])
+  }, [selectedChecklistBook])
 
   if (!state) {
     return (
@@ -384,6 +405,37 @@ export default function App() {
             className="btn btn-secondary"
             style={{
               padding: '7px 12px',
+              background: showChecklistPanel ? 'rgba(16,185,129,0.2)' : undefined,
+              borderColor: showChecklistPanel ? '#10b981' : undefined,
+            }}
+            onClick={() => setShowChecklistPanel(!showChecklistPanel)}
+            title="Verificar Checklist de 6 Reglas de Compra / Venta y Ratio 1:2"
+          >
+            <Layers size={14} color="#10b981" /> Estrategia 6/6 (H1/M15)
+          </button>
+
+          <button
+            className="btn"
+            style={{
+              padding: '7px 12px',
+              background: 'linear-gradient(135deg, #10b981 0%, #059669 100%)',
+              color: '#041d15',
+              fontWeight: 800,
+              border: 'none',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 5,
+            }}
+            onClick={() => setShowRealMoneyModal(true)}
+            title="Guía Paso a Paso para Conectar Claves API y Operar con Dinero Real en Bitso"
+          >
+            <DollarSign size={14} /> Invertir Dinero Real
+          </button>
+
+          <button
+            className="btn btn-secondary"
+            style={{
+              padding: '7px 12px',
               background: showRiskCalculator ? 'rgba(56,189,248,0.2)' : undefined,
               borderColor: showRiskCalculator ? '#38bdf8' : undefined,
             }}
@@ -531,6 +583,339 @@ export default function App() {
             </div>
           </div>
         </section>
+      )}
+
+      {/* PANEL DE ESTRATEGIA INSTITUCIONAL H1/M15 (CHECKLIST 6/6 & RATIO 1:2) */}
+      {showChecklistPanel && (
+        <section className="card" style={{ background: '#0a101f', borderColor: '#10b981', padding: '16px 20px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexWrap: 'wrap', gap: 10 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <Layers size={22} color="#10b981" />
+              <div>
+                <strong style={{ fontSize: '1.05rem', color: '#fff' }}>
+                  Estrategia Institucional: Tendencia H1 + Retroceso M15 (Checklist 6/6 y Ratio 1:2)
+                </strong>
+                <div style={{ fontSize: '0.74rem', color: '#94a3b8' }}>
+                  Verificación milimétrica en tiempo real de las 6 reglas de COMPRA, 6 de VENTA y Filtros de Exclusión.
+                </div>
+              </div>
+            </div>
+
+            {/* Selector de Activo para Inspeccionar */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Inspeccionar:</span>
+              <div style={{ display: 'flex', gap: 4 }}>
+                {['btc_mxn', 'eth_mxn', 'sol_mxn', 'xrp_mxn', 'nvda_stk', 'aapl_stk', 'nq_fut'].map((b) => (
+                  <button
+                    key={b}
+                    style={{
+                      background: selectedChecklistBook === b ? '#10b981' : '#070b14',
+                      color: selectedChecklistBook === b ? '#041d15' : '#94a3b8',
+                      border: `1px solid ${selectedChecklistBook === b ? '#10b981' : 'rgba(255,255,255,0.08)'}`,
+                      borderRadius: 5,
+                      padding: '3px 8px',
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => setSelectedChecklistBook(b)}
+                  >
+                    {catalog[b]?.symbol || b.split('_')[0].toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <button
+                className="btn btn-secondary"
+                style={{ padding: '3px 8px', fontSize: '0.7rem' }}
+                onClick={() => setShowChecklistPanel(false)}
+              >
+                Ocultar
+              </button>
+            </div>
+          </div>
+
+          {/* Estado General del Activo Seleccionado */}
+          {checklistData && (
+            <div>
+              {/* Barra Resumen */}
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '10px 14px',
+                  borderRadius: 8,
+                  background:
+                    checklistData.signal === 'BUY'
+                      ? 'rgba(16,185,129,0.18)'
+                      : checklistData.signal === 'SELL'
+                      ? 'rgba(244,63,94,0.18)'
+                      : '#0d1527',
+                  border: `1px solid ${
+                    checklistData.signal === 'BUY'
+                      ? '#10b981'
+                      : checklistData.signal === 'SELL'
+                      ? '#f43f5e'
+                      : 'rgba(255,255,255,0.08)'
+                  }`,
+                  marginBottom: 14,
+                  flexWrap: 'wrap',
+                  gap: 8,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <div
+                    style={{
+                      padding: '4px 10px',
+                      borderRadius: 6,
+                      background:
+                        checklistData.signal === 'BUY'
+                          ? '#10b981'
+                          : checklistData.signal === 'SELL'
+                          ? '#f43f5e'
+                          : '#475569',
+                      color: '#fff',
+                      fontWeight: 800,
+                      fontSize: '0.78rem',
+                    }}
+                  >
+                    SEÑAL: {checklistData.signal}
+                  </div>
+                  <span style={{ fontSize: '0.8rem', color: '#f1f5f9' }}>{checklistData.reason}</span>
+                </div>
+
+                <div className="mono" style={{ display: 'flex', gap: 14, fontSize: '0.76rem' }}>
+                  <span>
+                    Precio: <strong>{fmtMXN(checklistData.current_price)}</strong>
+                  </span>
+                  <span>
+                    H1 EMA200:{' '}
+                    <strong style={{ color: '#eab308' }}>
+                      {fmtMXN(checklistData.h1?.ema200)}
+                    </strong>
+                  </span>
+                  <span>
+                    M15 EMA20:{' '}
+                    <strong style={{ color: '#06b6d4' }}>
+                      {fmtMXN(checklistData.m15?.ema20)}
+                    </strong>
+                  </span>
+                  <span>
+                    RSI M15:{' '}
+                    <strong style={{ color: checklistData.m15?.rsi_14 >= 50 ? '#10b981' : '#f43f5e' }}>
+                      {checklistData.m15?.rsi_14}
+                    </strong>
+                  </span>
+                  <span>
+                    Ratio R:R:{' '}
+                    <strong style={{ color: '#10b981' }}>
+                      1:2 (TP +{checklistData.risk_reward?.tp_pct}% / SL -{checklistData.risk_reward?.sl_pct}%)
+                    </strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Grid 2 Columnas: Reglas COMPRAR (BUY) vs Reglas VENDER (SELL) */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 14 }}>
+                {/* COLUMNA COMPRA (BUY) */}
+                <div style={{ background: '#070c18', padding: 12, borderRadius: 10, border: '1px solid rgba(16,185,129,0.3)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <strong style={{ color: '#10b981', fontSize: '0.85rem' }}>
+                      🟢 REGLAS PARA COMPRAR (BUY) [6/6]
+                    </strong>
+                    <span className="mono" style={{ fontSize: '0.72rem', color: '#10b981' }}>
+                      {Object.values(checklistData.checklist_buy || {}).filter((r) => r.passed).length}/6 Cumplidas
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {Object.entries(checklistData.checklist_buy || {}).map(([key, rule]) => (
+                      <div
+                        key={key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 8,
+                          padding: '6px 8px',
+                          borderRadius: 6,
+                          background: rule.passed ? 'rgba(16,185,129,0.1)' : 'rgba(255,255,255,0.02)',
+                          border: `1px solid ${rule.passed ? 'rgba(16,185,129,0.25)' : 'rgba(255,255,255,0.04)'}`,
+                        }}
+                      >
+                        <span style={{ color: rule.passed ? '#10b981' : '#64748b', fontSize: '0.9rem', lineHeight: '1.1' }}>
+                          {rule.passed ? '✓' : '✗'}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '0.74rem', fontWeight: 700, color: rule.passed ? '#f1f5f9' : '#94a3b8' }}>
+                            {rule.name}
+                          </div>
+                          <div className="mono" style={{ fontSize: '0.68rem', color: rule.passed ? '#10b981' : '#64748b' }}>
+                            {rule.detail}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* COLUMNA VENTA (SELL) */}
+                <div style={{ background: '#070c18', padding: 12, borderRadius: 10, border: '1px solid rgba(244,63,94,0.3)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                    <strong style={{ color: '#f43f5e', fontSize: '0.85rem' }}>
+                      🔴 REGLAS PARA VENDER (SELL) [6/6]
+                    </strong>
+                    <span className="mono" style={{ fontSize: '0.72rem', color: '#f43f5e' }}>
+                      {Object.values(checklistData.checklist_sell || {}).filter((r) => r.passed).length}/6 Cumplidas
+                    </span>
+                  </div>
+
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {Object.entries(checklistData.checklist_sell || {}).map(([key, rule]) => (
+                      <div
+                        key={key}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'flex-start',
+                          gap: 8,
+                          padding: '6px 8px',
+                          borderRadius: 6,
+                          background: rule.passed ? 'rgba(244,63,94,0.1)' : 'rgba(255,255,255,0.02)',
+                          border: `1px solid ${rule.passed ? 'rgba(244,63,94,0.25)' : 'rgba(255,255,255,0.04)'}`,
+                        }}
+                      >
+                        <span style={{ color: rule.passed ? '#f43f5e' : '#64748b', fontSize: '0.9rem', lineHeight: '1.1' }}>
+                          {rule.passed ? '✓' : '✗'}
+                        </span>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: '0.74rem', fontWeight: 700, color: rule.passed ? '#f1f5f9' : '#94a3b8' }}>
+                            {rule.name}
+                          </div>
+                          <div className="mono" style={{ fontSize: '0.68rem', color: rule.passed ? '#f43f5e' : '#64748b' }}>
+                            {rule.detail}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* FILTROS DE EXCLUSIÓN: CUÁNDO NO OPERAR */}
+              <div style={{ marginTop: 12, background: '#080d1a', padding: 10, borderRadius: 8, border: '1px solid rgba(255,255,255,0.05)' }}>
+                <div style={{ fontSize: '0.74rem', fontWeight: 700, color: '#f59e0b', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <ShieldAlert size={15} /> CUÁNDO NO OPERAR (Filtros de Seguridad Institucional):
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 8, fontSize: '0.7rem' }}>
+                  {Object.entries(checklistData.exclusion_filters || {}).map(([k, f]) => (
+                    <div
+                      key={k}
+                      style={{
+                        padding: '5px 8px',
+                        borderRadius: 5,
+                        background: f.blocked ? 'rgba(244,63,94,0.15)' : 'rgba(16,185,129,0.08)',
+                        border: `1px solid ${f.blocked ? '#f43f5e' : 'rgba(16,185,129,0.2)'}`,
+                        color: f.blocked ? '#f43f5e' : '#10b981',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 6,
+                      }}
+                    >
+                      <span>{f.blocked ? '🚫 BLOQUEADO' : '✅ DESPEJADO'}</span>
+                      <span style={{ color: '#cbd5e1' }}>{f.desc}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* MODAL INVERTIR CON DINERO REAL (BITSO LIVE API) */}
+      {showRealMoneyModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            background: 'rgba(0,0,0,0.85)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: 16,
+          }}
+          onClick={() => setShowRealMoneyModal(false)}
+        >
+          <div
+            style={{
+              background: '#090f1d',
+              border: '1px solid #10b981',
+              borderRadius: 14,
+              maxWidth: 620,
+              width: '100%',
+              padding: 24,
+              color: '#fff',
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <DollarSign size={24} color="#10b981" />
+                <strong style={{ fontSize: '1.15rem' }}>Cómo Invertir con Dinero Real en Bitso</strong>
+              </div>
+              <button
+                className="btn btn-secondary"
+                style={{ padding: '4px 10px', fontSize: '0.75rem' }}
+                onClick={() => setShowRealMoneyModal(false)}
+              >
+                ✕ Cerrar
+              </button>
+            </div>
+
+            <div style={{ fontSize: '0.82rem', color: '#94a3b8', lineHeight: '1.5', display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)', padding: 12, borderRadius: 8 }}>
+                <strong style={{ color: '#10b981' }}>Paso 1: Generar tus Claves API en Bitso</strong>
+                <p style={{ margin: '4px 0 0 0', color: '#cbd5e1' }}>
+                  Inicia sesión en <a href="https://bitso.com" target="_blank" rel="noreferrer" style={{ color: '#38bdf8' }}>bitso.com</a>, ve a tu <strong>Perfil → Claves API</strong> y genera una nueva clave.
+                  Otorga únicamente permisos para <em>"Consultar saldo"</em> y <em>"Colocar órdenes"</em> (<strong>NUNCA</strong> actives permisos de retiro).
+                </p>
+              </div>
+
+              <div style={{ background: '#0d1527', border: '1px solid rgba(255,255,255,0.06)', padding: 12, borderRadius: 8 }}>
+                <strong style={{ color: '#38bdf8' }}>Paso 2: Configurar las Claves en el Servidor</strong>
+                <p style={{ margin: '4px 0 0 0', color: '#cbd5e1' }}>
+                  Configura tus credenciales en el archivo <code>.env</code> local o en el panel de variables de entorno de Render:
+                </p>
+                <pre style={{ background: '#050811', padding: 8, borderRadius: 6, fontSize: '0.74rem', color: '#a5f3fc', marginTop: 6 }}>
+                  BITSO_API_KEY=tu_api_key_aqui{'\n'}
+                  BITSO_API_SECRET=tu_api_secret_aqui
+                </pre>
+              </div>
+
+              <div style={{ background: '#0d1527', border: '1px solid rgba(255,255,255,0.06)', padding: 12, borderRadius: 8 }}>
+                <strong style={{ color: '#f59e0b' }}>Paso 3: Protocolo de Seguridad Obligatorio</strong>
+                <ul style={{ margin: '6px 0 0 16px', padding: 0, color: '#cbd5e1' }}>
+                  <li>Prueba primero en esta cuenta de Paper Trading hasta confirmar que las ganancias 1:2 superan consistentemente las pérdidas.</li>
+                  <li>Inicia en dinero real con un capital pequeño que estés dispuesto a arriesgar (ej. $1,000 a $5,000 MXN).</li>
+                  <li>Configura la pérdida máxima por operación en la pestaña de <strong>Gestión de Riesgo Pro</strong> a no más del 1% o 2% de tu capital.</li>
+                </ul>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 6 }}>
+                <button
+                  className="btn btn-primary"
+                  style={{ padding: '8px 18px', fontWeight: 800, fontSize: '0.82rem' }}
+                  onClick={() => setShowRealMoneyModal(false)}
+                >
+                  Entendido, mantener en Paper Trading por ahora
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* KPI STRIP */}

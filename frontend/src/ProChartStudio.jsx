@@ -299,9 +299,9 @@ export default function ProChartStudio({
               cursor: 'pointer',
             }}
             onClick={() => setShowEMA(!showEMA)}
-            title="Medias Exponenciales EMA 9 y EMA 18"
+            title="EMA 20 (Cyan) y EMA 200 (Oro) de Tendencia"
           >
-            EMA
+            EMA 20/200
           </button>
           <button
             style={{
@@ -315,9 +315,9 @@ export default function ProChartStudio({
               cursor: 'pointer',
             }}
             onClick={() => setShowRSI(!showRSI)}
-            title="Sub-gráfico de Índice de Fuerza Relativa (RSI 14)"
+            title="Sub-gráfico de Índice de Fuerza Relativa (RSI 14) con Nivel 50"
           >
-            RSI
+            RSI 50
           </button>
 
           {onToggleFocus && (
@@ -572,7 +572,7 @@ export default function ProChartStudio({
         )}
       </div>
 
-      {/* 4. BARRA DE PARÁMETROS TÉCNICOS PROREALTIME */}
+      {/* 4. BARRA DE PARÁMETROS TÉCNICOS: ESTRATEGIA TENDENCIA + RETROCESO (RATIO 1:2) */}
       <div
         className="mono"
         style={{
@@ -587,31 +587,31 @@ export default function ProChartStudio({
         }}
       >
         <div>
-          <span style={{ color: '#94a3b8' }}>Auto-TP: </span>
+          <span style={{ color: '#94a3b8' }}>Take Profit: </span>
           <strong style={{ color: '#10b981' }}>+{asset.auto_tp_pct}%</strong>
           <div style={{ fontSize: '0.66rem', color: '#64748b' }}>{fmtMXN(asset.tp_price)}</div>
         </div>
         <div>
-          <span style={{ color: '#94a3b8' }}>Auto-SL: </span>
+          <span style={{ color: '#94a3b8' }}>Stop Loss: </span>
           <strong style={{ color: '#f43f5e' }}>-{asset.auto_sl_pct}%</strong>
           <div style={{ fontSize: '0.66rem', color: '#64748b' }}>{fmtMXN(asset.sl_price)}</div>
         </div>
         <div>
-          <span style={{ color: '#94a3b8' }}>Trailing: </span>
-          <strong style={{ color: '#38bdf8' }}>+{asset.auto_trail_arm_pct}%</strong>
-          <div style={{ fontSize: '0.66rem', color: '#64748b' }}>Candado</div>
+          <span style={{ color: '#94a3b8' }}>Ratio R:R: </span>
+          <strong style={{ color: '#38bdf8' }}>1 : 2.0</strong>
+          <div style={{ fontSize: '0.66rem', color: '#10b981' }}>Ganancia = 2x Riesgo</div>
         </div>
         <div>
-          <span style={{ color: '#94a3b8' }}>RSI(14): </span>
+          <span style={{ color: '#94a3b8' }}>RSI(14) M15: </span>
           <strong
             style={{
-              color: asset.rsi_14 > 65 ? '#f43f5e' : asset.rsi_14 < 40 ? '#10b981' : '#f1f5f9',
+              color: asset.rsi_14 >= 50 ? '#10b981' : '#f43f5e',
             }}
           >
             {asset.rsi_14}
           </strong>
-          <div style={{ fontSize: '0.66rem', color: '#64748b' }}>
-            {asset.rsi_14 < 35 ? 'Sobreventa' : asset.rsi_14 > 65 ? 'Sobrecompra' : 'Neutro'}
+          <div style={{ fontSize: '0.66rem', color: asset.rsi_14 >= 50 ? '#10b981' : '#f43f5e' }}>
+            {asset.rsi_14 >= 50 ? 'Recupera 50 ✓' : 'Pierde 50 ✗'}
           </div>
         </div>
       </div>

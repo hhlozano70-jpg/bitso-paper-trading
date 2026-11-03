@@ -29,6 +29,22 @@ class PaperTradingEngine:
         self._init_db()
         self._load_state()
 
+    def reset_portfolio(self, initial_cash: float = 100_000.0) -> None:
+        """Reinicia el portafolio de simulación a un saldo inicial limpio (por defecto $100,000 MXN)."""
+        self.initial_cash_mxn = initial_cash
+        self.cash_mxn = initial_cash
+        self.positions = {}
+        self.trades = []
+        self.equity_curve = []
+        self.benchmark_initial_prices = {}
+        self._save_state()
+        try:
+            with sqlite3.connect(DB_FILE) as conn:
+                conn.execute("DELETE FROM trades")
+                conn.commit()
+        except Exception as exc:
+            print(f"[PaperTradingEngine] Error limpiando base de datos SQLite: {exc}")
+
     def _init_db(self) -> None:
         try:
             with sqlite3.connect(DB_FILE) as conn:

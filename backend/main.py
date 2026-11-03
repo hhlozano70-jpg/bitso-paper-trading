@@ -241,6 +241,7 @@ def build_state_payload() -> Dict[str, Any]:
         "opportunities": opportunities_cache,
         "arbitrage": arbitrage_cache,
         "bot": bot.get_config(),
+        "trend_pullback": bot.last_checklist,
         "server_time": datetime.now().strftime("%H:%M:%S"),
     }
 
@@ -288,72 +289,46 @@ async def run_bot_cycle(
             break
 
     if (bot.multi_asset_auto or target_book) and not force_trade_side:
-        # A) Evaluar salidas: Auto-TP, Breakeven Shield, Trailing Lock, Auto-SL y Rotación Protegida
+        # A) Evaluar salidas: Take Profit 1:2 estricto, Stop Loss estructural y Salida Técnica M15
         for held_book, pos_data in list(positions.items()):
             qty = float(pos_data.get("amount", 0.0))
             if qty <= 1e-8 or held_book not in tickers_cache:
                 continue
 
             unr_pct = float(pos_data.get("unrealized_pnl_pct", 0.0))
-            peak_pct = float(pos_data.get("peak_pnl_pct", unr_pct))
             hold_sec = int(pos_data.get("hold_seconds", 0))
-            opp_info = opp_by_book.get(held_book, {})
-            asset_rsi = float(opp_info.get("rsi_14", 50.0))
-            sma_diff = float(opp_info.get("sma_diff_bps", 0.0))
-            current_score = float(opp_info.get("opportunity_score", 50.0))
             sym = ASSET_CATALOG.get(held_book, {}).get("symbol", held_book.upper())
 
-            if bot.auto_tp_sl_by_coin:
-                tp_target = float(opp_info.get("auto_tp_pct") or pos_data.get("auto_tp_pct") or 0.55)
-                raw_sl = float(opp_info.get("auto_sl_pct") or pos_data.get("auto_sl_pct") or 0.35)
-                sl_target = min(0.35, raw_sl)
-                trail_arm = float(opp_info.get("auto_trail_arm_pct") or 0.30)
-                trail_drop = float(opp_info.get("auto_trail_drop_pct") or 0.08)
-            else:
-                tp_target = bot.take_profit_pct
-                sl_target = min(0.35, bot.stop_loss_pct)
-                trail_arm = bot.trailing_arm_pct
-                trail_drop = bot.trailing_drop_pct
+            # Respetar Ratio 1:2: el Take Profit es el doble del Stop Loss
+            raw_sl = float(pos_data.get("auto_sl_pct") or bot.stop_loss_pct or 0.50)
+            sl_target = max(0.35, min(1.10, raw_sl))
+            tp_target = float(pos_data.get("auto_tp_pct") or (sl_target * 2.0))
 
             exit_reason = None
 
-            # 1. Take Profit Principal Automatizado (+0.48% a +0.80% meta real)
+            # 1. Take Profit Principal 1:2 Ganador (Meta completa)
             if unr_pct >= tp_target:
-                exit_reason = f"[Sniper TP Ganador] {sym} alcanzó meta de +{unr_pct:.2f}% (Target: +{tp_target:.2f}%)"
+                exit_reason = f"[Take Profit 1:2 Ganador] {sym} completó meta de +{unr_pct:+.2f}% (Objetivo 1:2: +{tp_target:.2f}%)"
 
-            # 2. Trailing Profit Lock: Asegura ganancia cuando sube sobre +0.30% y retrocede 0.08%
-            elif peak_pct >= trail_arm and (peak_pct - unr_pct) >= trail_drop and unr_pct >= 0.18:
-                exit_reason = (
-                    f"[Trailing Profit Asegurado] {sym} aseguró +{unr_pct:.2f}% "
-                    f"(pico +{peak_pct:.2f}%)"
-                )
-
-            # 3. Breakeven Shield Firme: Si ya tocó +0.25%, asegura que no caiga a pérdidas (cierra en +0.08% min)
-            elif peak_pct >= 0.25 and unr_pct <= 0.10 and unr_pct >= 0.02:
-                exit_reason = f"[Breakeven Shield] {sym} protegido con ganancia (+{unr_pct:.2f}%)"
-
-            # 4. Toma de ganancia en verde si llega a fuerte sobrecompra (RSI >= 70 y PnL >= +0.35%)
-            elif unr_pct >= 0.35 and asset_rsi >= 70.0 and hold_sec >= 120:
-                exit_reason = f"[Scalp Verde en Resistencia] {sym} cobró +{unr_pct:.2f}% al llegar a sobrecompra extrema (RSI={asset_rsi:.1f})"
-
-            # 5. Stop Loss Estricto Capped (corte defensivo inquebrantable a -0.35% máx)
+            # 2. Stop Loss Estructural Controlado
             elif unr_pct <= -sl_target:
-                exit_reason = f"[Stop Loss Controlado] {sym} cortó pérdida en {unr_pct:+.2f}% (SL Máx: -{sl_target:.2f}%)"
+                exit_reason = f"[Stop Loss Controlado] {sym} cortó en {unr_pct:+.2f}% (SL Máx: -{sl_target:.2f}%)"
 
-            # 6. Rotación por Oportunidad Superior: Solo si la posición ya está en VERDE SUSTANCIAL (>= +0.35%)
-            elif (
-                unr_pct >= 0.35
-                and hold_sec >= 360
-                and best_unheld_opp
-                and best_unheld_opp["book"] in ALLOWED_AUTO_BOOKS
-                and (best_unheld_opp["opportunity_score"] - current_score) >= 20.0
-                and best_unheld_opp["opportunity_score"] >= 80.0
-            ):
-                new_sym = best_unheld_opp["symbol"]
-                exit_reason = (
-                    f"[Rotación con Ganancia: {sym} → {new_sym}] Cobró +{unr_pct:.2f}% ({hold_sec}s) "
-                    f"para entrar a nuevo líder {new_sym} (Score {best_unheld_opp['opportunity_score']:.1f})"
+            # 3. Salida Técnica por Quiebre Bajista en M15 (después de madurar al menos 10 minutos)
+            elif hold_sec >= 600:
+                ohlc_held = await bitso.get_multi_timeframe_ohlc(held_book)
+                tk_held = tickers_cache.get(held_book, {})
+                eval_held = bot.trend_engine.evaluate_strategy(
+                    book=held_book,
+                    current_price=float(tk_held.get("last", 0.0)),
+                    candles_h1=ohlc_held.get("h1", []),
+                    candles_m15=ohlc_held.get("m15", []),
+                    spread_bps=float(tk_held.get("spread_bps", 0.0)),
+                    available_cash_mxn=engine.cash_mxn,
+                    position_exposure=0.5,
                 )
+                if eval_held.get("signal") == "SELL" and unr_pct >= 0.15:
+                    exit_reason = f"[Salida Técnica M15 en Ganancia] {sym} aseguró +{unr_pct:+.2f}% ante quiebre bajista M15"
 
             if exit_reason:
                 res = engine.execute_order(
@@ -361,7 +336,7 @@ async def run_bot_cycle(
                     side="SELL",
                     ticker=tickers_cache[held_book],
                     crypto_amount=qty,
-                    source="BOT:SNIPER",
+                    source="BOT:TREND-1:2",
                     reason=exit_reason,
                     confidence=0.96,
                 )
@@ -369,90 +344,94 @@ async def run_bot_cycle(
                     bot.last_trade_ts = time.time()
                     last_executed_trade = res["trade"]
 
-        # B) Entradas Selectivas: Solo los 7 activos líderes ultra-líquidos, máx 2 posiciones abiertas
+        # B) Entradas Selectivas: Estrategia Institucional de Tendencia H1 + Retroceso M15 (Reglas 6/6)
         portfolio = engine.get_summary(tickers_cache, active_book=active_book, opp_by_book=opp_by_book)
         positions = portfolio.get("positions", {})
         open_positions_count = sum(1 for p in positions.values() if float(p.get("amount", 0.0)) > 1e-8)
 
-        if open_positions_count < 2 and engine.cash_mxn >= 500.0:
-            chosen_opp = None
-            if target_book and target_book in ALLOWED_AUTO_BOOKS:
-                chosen_opp = next((o for o in opportunities_cache if o["book"] == target_book), None)
-            elif opportunities_cache:
-                for opp in opportunities_cache:
-                    b = opp["book"]
-                    # REGLA DE ORO: Solo los 7 activos líderes ultra-líquidos
-                    if b not in ALLOWED_AUTO_BOOKS:
-                        continue
+        if open_positions_count < 2 and engine.cash_mxn >= 1000.0:
+            candidate_books = [target_book] if (target_book and target_book in ALLOWED_AUTO_BOOKS) else list(ALLOWED_AUTO_BOOKS)
+            chosen_setup = None
 
-                    already_held = float(positions.get(b, {}).get("amount", 0.0)) > 1e-8
-                    spread_bps = float(opp.get("spread_bps", 99.0))
-                    macro_status = str(opp.get("macro_status", ""))
-                    rsi = float(opp.get("rsi_14", 50.0))
+            for b in candidate_books:
+                if not b or b not in tickers_cache:
+                    continue
+                # 1. No abrir si ya tenemos posición abierta en este activo
+                if float(positions.get(b, {}).get("amount", 0.0)) > 1e-8:
+                    continue
 
-                    # 4 Pilares Quirúrgicos de Entrada:
-                    # 1. Sin posición previa en este activo
-                    # 2. Score >= 76.0 (Alta certeza)
-                    # 3. Spread ultra-bajo <= 4.2 bps (Liquidez institucional)
-                    # 4. Macro trend alineado (no bloqueado por BTC o Nasdaq)
-                    # 5. Entrada en retroceso real: RSI <= 42.0 (no perseguir techos)
-                    if (
-                        not already_held
-                        and opp["opportunity_score"] >= 76.0
-                        and spread_bps <= 4.2
-                        and "Bloqueado" not in macro_status
-                        and rsi <= 42.0
-                    ):
-                        # Pilar 3: Confirmación de Libro de Órdenes (Bid Imbalance >= 49%)
-                        ob = order_book_cache.get(b)
-                        imbalance = float(ob.get("imbalance", 0.52)) if ob else 0.52
-                        if imbalance >= 0.49:
-                            chosen_opp = opp
-                            break
+                tk = tickers_cache[b]
+                ohlc = await bitso.get_multi_timeframe_ohlc(b)
+                if not ohlc.get("h1") or not ohlc.get("m15"):
+                    continue
 
-            if chosen_opp:
-                b = chosen_opp["book"]
+                analysis = bot.trend_engine.evaluate_strategy(
+                    book=b,
+                    current_price=float(tk.get("last", 0.0)),
+                    candles_h1=ohlc.get("h1", []),
+                    candles_m15=ohlc.get("m15", []),
+                    spread_bps=float(tk.get("spread_bps", 0.0)),
+                    available_cash_mxn=engine.cash_mxn,
+                    position_exposure=0.0,
+                )
+
+                # Si cumple las 6 reglas de COMPRA y ningún filtro de exclusión está activo:
+                if analysis.get("signal") == "BUY":
+                    chosen_setup = {
+                        "book": b,
+                        "analysis": analysis,
+                        "ticker": tk,
+                    }
+                    break
+
+            if chosen_setup:
+                b = chosen_setup["book"]
+                ana = chosen_setup["analysis"]
+                tk = chosen_setup["ticker"]
+                rr = ana["risk_reward"]
+
                 slots_remaining = max(1, 2 - open_positions_count)
                 mxn_to_spend = min(
                     engine.cash_mxn * 0.95,
                     max(engine.cash_mxn / slots_remaining * 0.92, engine.cash_mxn * (bot.trade_size_pct / 100.0)),
                 )
-                if mxn_to_spend >= 100.0 and b in tickers_cache:
+
+                if mxn_to_spend >= 200.0:
                     if len(price_history_by_book.get(b, [])) < 5:
                         await _seed_book_history(b)
-                    conf = round(min(0.98, chosen_opp["opportunity_score"] / 100.0), 2)
-                    auto_tp = chosen_opp["auto_tp_pct"]
-                    auto_sl = chosen_opp["auto_sl_pct"]
-                    reason = (
-                        f"[Entrada Sniper ({chosen_opp['category']}) | Score {chosen_opp['opportunity_score']} | "
-                        f"TP +{auto_tp}% / SL -{auto_sl}%] {chosen_opp['setup_type']}: {chosen_opp['rationale']}"
-                    )
+
+                    auto_tp = rr["tp_pct"]
+                    auto_sl = rr["sl_pct"]
+                    reason = f"[Entrada Tendencia H1 + Retroceso M15 (6/6) | TP +{auto_tp}% / SL -{auto_sl}% (1:2)] {ana['reason']}"
+
                     res = engine.execute_order(
                         book=b,
                         side="BUY",
-                        ticker=tickers_cache[b],
+                        ticker=tk,
                         mxn_amount=mxn_to_spend,
-                        source="BOT:SNIPER",
+                        source="BOT:TREND-1:2",
                         reason=reason,
-                        confidence=conf,
+                        confidence=ana.get("confidence", 0.95),
                         auto_tp_pct=auto_tp,
                         auto_sl_pct=auto_sl,
                     )
                     if res.get("success"):
                         bot.last_trade_ts = time.time()
+                        bot.last_checklist = ana
                         bot.last_signal = {
                             "action": "BUY",
-                            "confidence": conf,
+                            "confidence": ana.get("confidence", 0.95),
                             "reason": reason,
-                            "strategy": "sniper_scalper",
+                            "strategy": "trend_pullback_h1_m15",
                             "timestamp": datetime.now().isoformat(),
                             "features": bot.extract_features(
                                 price_history_by_book.get(b, []),
-                                tickers_cache[b],
+                                tk,
                                 order_book_cache.get(b, {"imbalance": 0.5}),
                                 positions.get(b, {}),
                                 engine.cash_mxn,
                             ),
+                            "checklist": ana,
                         }
                         _refresh_opportunities()
                         return {"signal": bot.last_signal, "executed_trade": res["trade"]}
@@ -473,12 +452,15 @@ async def run_bot_cycle(
 
     pos = positions.get(book, {"amount": 0.0, "unrealized_pnl_pct": 0.0})
     hist = price_history_by_book.get(book, [])
+    ohlc = await bitso.get_multi_timeframe_ohlc(book)
     signal = bot.evaluate(
         price_history=hist,
         ticker=ticker,
         order_book=ob,
         position=pos,
         cash_mxn=engine.cash_mxn,
+        candles_h1=ohlc.get("h1"),
+        candles_m15=ohlc.get("m15"),
         force=force,
     )
 
@@ -745,6 +727,26 @@ async def reset_portfolio(req: ResetPortfolioRequest) -> Dict[str, Any]:
             await run_bot_cycle(force=True)
     await broadcast_state()
     return build_state_payload()
+
+
+@app.get("/api/trend-pullback/checklist")
+async def get_trend_pullback_checklist(book: Optional[str] = None) -> Dict[str, Any]:
+    """Retorna la evaluación de las 6 reglas de COMPRA, 6 de VENTA y filtros de exclusión en tiempo real."""
+    target = book if (book and book in SUPPORTED_BOOKS) else active_book
+    tk = tickers_cache.get(target) or await bitso.get_ticker(target)
+    if not tk:
+        raise HTTPException(status_code=503, detail="Precio de activo no disponible")
+    ohlc = await bitso.get_multi_timeframe_ohlc(target)
+    analysis = bot.trend_engine.evaluate_strategy(
+        book=target,
+        current_price=float(tk.get("last", 0.0)),
+        candles_h1=ohlc.get("h1", []),
+        candles_m15=ohlc.get("m15", []),
+        spread_bps=float(tk.get("spread_bps", 0.0)),
+        available_cash_mxn=engine.cash_mxn,
+        position_exposure=0.0,
+    )
+    return analysis
 
 
 @app.get("/api/health")

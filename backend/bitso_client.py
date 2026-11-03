@@ -89,6 +89,7 @@ class BitsoClient:
         self.usd_mxn_rate: float = 18.85
         self._yf_cache: Dict[str, Dict[str, Any]] = {}
         self._yf_series_cache: Dict[str, List[Tuple[str, float]]] = {}
+        self._candles_cache: Dict[str, Dict[str, Any]] = {}
         self._last_yf_fetch_ts: float = 0.0
 
     async def close(self) -> None:
@@ -370,3 +371,141 @@ class BitsoClient:
         except Exception as exc:
             print(f"[BitsoClient] Error obteniendo order_book ({book}): {exc}")
         return {"bids": [], "asks": [], "bid_volume": 0.0, "ask_volume": 0.0, "imbalance": 0.5}
+
+    async def get_multi_timeframe_ohlc(self, book: str = "btc_mxn") -> Dict[str, List[Dict[str, float]]]:
+        """
+        Obtiene series de velas OHLC en dos temporalidades nativas: H1 (1 hora) y M15 (15 minutos).
+        Convierte automáticamente a Pesos Mexicanos (MXN).
+        Incluye caché en memoria de 45 segundos para alto rendimiento sin rate-limiting.
+        """
+        import time
+        now = time.time()
+        cached = self._candles_cache.get(book)
+        if cached and (now - cached.get("ts", 0)) < 45.0:
+            return {"h1": cached.get("h1", []), "m15": cached.get("m15", [])}
+
+        meta = ASSET_CATALOG.get(book, {})
+        mult = self.usd_mxn_rate if meta.get("quote") == "USD" else 1.0
+
+        h1_candles: List[Dict[str, float]] = []
+        m15_candles: List[Dict[str, float]] = []
+
+        if meta.get("source") == "yahoo":
+            yf_sym = meta.get("yf_ticker", "")
+            if yf_sym:
+                try:
+                    # 1. H1 de Yahoo (range=3mo, interval=60m para calcular EMA 200)
+                    resp_h1 = await self._yf_client.get(
+                        f"{self.YF_BASE_URL}/{yf_sym}",
+                        params={"interval": "60m", "range": "3mo"},
+                    )
+                    if resp_h1.status_code == 200:
+                        d1 = resp_h1.json()
+                        res_list = d1.get("chart", {}).get("result", [])
+                        if res_list:
+                            r0 = res_list[0]
+                            ts_list = r0.get("timestamp", []) or []
+                            q = (r0.get("indicators", {}).get("quote") or [{}])[0]
+                            op = q.get("open", []) or []
+                            hi = q.get("high", []) or []
+                            lo = q.get("low", []) or []
+                            cl = q.get("close", []) or []
+                            vo = q.get("volume", []) or []
+                            for t, o, h, l, c, v in zip(ts_list, op, hi, lo, cl, vo):
+                                if c is not None and float(c) > 0:
+                                    h1_candles.append({
+                                        "time": int(t),
+                                        "open": round(float(o or c) * mult, 2),
+                                        "high": round(float(h or c) * mult, 2),
+                                        "low": round(float(l or c) * mult, 2),
+                                        "close": round(float(c) * mult, 2),
+                                        "volume": float(v or 0.0),
+                                    })
+
+                    # 2. M15 de Yahoo (range=5d, interval=15m)
+                    resp_m15 = await self._yf_client.get(
+                        f"{self.YF_BASE_URL}/{yf_sym}",
+                        params={"interval": "15m", "range": "5d"},
+                    )
+                    if resp_m15.status_code == 200:
+                        d15 = resp_m15.json()
+                        res_list15 = d15.get("chart", {}).get("result", [])
+                        if res_list15:
+                            r0 = res_list15[0]
+                            ts_list = r0.get("timestamp", []) or []
+                            q = (r0.get("indicators", {}).get("quote") or [{}])[0]
+                            op = q.get("open", []) or []
+                            hi = q.get("high", []) or []
+                            lo = q.get("low", []) or []
+                            cl = q.get("close", []) or []
+                            vo = q.get("volume", []) or []
+                            for t, o, h, l, c, v in zip(ts_list, op, hi, lo, cl, vo):
+                                if c is not None and float(c) > 0:
+                                    m15_candles.append({
+                                        "time": int(t),
+                                        "open": round(float(o or c) * mult, 2),
+                                        "high": round(float(h or c) * mult, 2),
+                                        "low": round(float(l or c) * mult, 2),
+                                        "close": round(float(c) * mult, 2),
+                                        "volume": float(v or 0.0),
+                                    })
+                except Exception as exc:
+                    print(f"[BitsoClient] Error obteniendo OHLC Yahoo ({book}): {exc}")
+        else:
+            # Bitso Native OHLC API v3
+            try:
+                # 1. H1 (time_bucket=3600)
+                resp_h1 = await self._client.get("/ohlc/", params={"book": book, "time_bucket": 3600})
+                if resp_h1.status_code == 200:
+                    d = resp_h1.json()
+                    if d.get("success") and isinstance(d.get("payload"), list):
+                        for c in d["payload"]:
+                            o = float(c.get("first_rate") or 0.0)
+                            cl = float(c.get("last_rate") or 0.0)
+                            hi = float(c.get("max_rate") or max(o, cl))
+                            lo = float(c.get("min_rate") or min(o, cl))
+                            v = float(c.get("volume") or 0.0)
+                            t = int(c.get("bucket_start_time", 0)) // 1000
+                            if cl > 0:
+                                h1_candles.append({
+                                    "time": t,
+                                    "open": round(o * mult, 6 if (o * mult) < 1 else 2),
+                                    "high": round(hi * mult, 6 if (hi * mult) < 1 else 2),
+                                    "low": round(lo * mult, 6 if (lo * mult) < 1 else 2),
+                                    "close": round(cl * mult, 6 if (cl * mult) < 1 else 2),
+                                    "volume": v,
+                                })
+
+                # 2. M15 (time_bucket=900)
+                resp_m15 = await self._client.get("/ohlc/", params={"book": book, "time_bucket": 900})
+                if resp_m15.status_code == 200:
+                    d = resp_m15.json()
+                    if d.get("success") and isinstance(d.get("payload"), list):
+                        for c in d["payload"]:
+                            o = float(c.get("first_rate") or 0.0)
+                            cl = float(c.get("last_rate") or 0.0)
+                            hi = float(c.get("max_rate") or max(o, cl))
+                            lo = float(c.get("min_rate") or min(o, cl))
+                            v = float(c.get("volume") or 0.0)
+                            t = int(c.get("bucket_start_time", 0)) // 1000
+                            if cl > 0:
+                                m15_candles.append({
+                                    "time": t,
+                                    "open": round(o * mult, 6 if (o * mult) < 1 else 2),
+                                    "high": round(hi * mult, 6 if (hi * mult) < 1 else 2),
+                                    "low": round(lo * mult, 6 if (lo * mult) < 1 else 2),
+                                    "close": round(cl * mult, 6 if (cl * mult) < 1 else 2),
+                                    "volume": v,
+                                })
+            except Exception as exc:
+                print(f"[BitsoClient] Error obteniendo OHLC Bitso ({book}): {exc}")
+
+        # Guardar en caché si obtuvimos resultados
+        if h1_candles or m15_candles:
+            self._candles_cache[book] = {
+                "ts": now,
+                "h1": h1_candles,
+                "m15": m15_candles,
+            }
+
+        return {"h1": h1_candles, "m15": m15_candles}

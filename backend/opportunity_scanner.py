@@ -130,26 +130,19 @@ class OpportunityScanner:
         spread_pct = spread_bps / 100.0
         friction_floor_pct = roundtrip_fee_pct + (spread_pct * 0.65)
 
-        # 3. Volatilidad combinada y targets realistas
-        scalp_move_pct = max(tick_atr_pct * 2.2, volatility_24h_pct * 0.06)
-
-        # Asimetría Quirúrgica: Take Profit debe superar con creces al Stop Loss
-        # Comisiones roundtrip (0.06%) + spread (~0.04%) = ~0.10% costo base
-        base_tp = max(0.48, min(0.80, friction_floor_pct + scalp_move_pct * 1.15))
-        base_sl = 0.35  # Stop Loss rígido e inamovible en 0.35%
-
-        auto_tp = round(base_tp, 2)
-        auto_sl = 0.35
-
-        # Trailing Stop se activa únicamente al alcanzar +0.30% y protege al menos +0.22%
-        auto_trail_arm = 0.30
-        auto_trail_drop = 0.08
+        # 3. Volatilidad combinada y Ratio Riesgo/Beneficio Estricto 1:2
+        scalp_move_pct = max(tick_atr_pct * 2.0, volatility_24h_pct * 0.05)
+        # SL estructural adaptable (mínimo 0.40%, máximo 0.65% para absorber ruido natural)
+        base_sl = max(0.40, min(0.65, round(friction_floor_pct + scalp_move_pct * 1.1, 2)))
+        # TAKE PROFIT EXACTAMENTE AL DOBLE (1:2 R:R)
+        base_tp = round(base_sl * 2.0, 2)
 
         return {
-            "auto_tp_pct": auto_tp,
-            "auto_sl_pct": auto_sl,
-            "auto_trail_arm_pct": auto_trail_arm,
-            "auto_trail_drop_pct": auto_trail_drop,
+            "auto_tp_pct": base_tp,
+            "auto_sl_pct": base_sl,
+            "risk_reward_ratio": "1:2",
+            "auto_trail_arm_pct": 0.0,
+            "auto_trail_drop_pct": 0.0,
             "tick_atr_pct": round(tick_atr_pct, 3),
         }
 

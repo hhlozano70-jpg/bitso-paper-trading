@@ -1,36 +1,51 @@
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from trend_pullback_engine import TrendPullbackEngine
 
 
 class TradingBot:
     """
-    Bot de Trading Modular para Bitso Paper Trading.
-    Incluye cálculo de indicadores técnicos en tiempo real (SMA, RSI, OrderBook Imbalance)
-    y un punto de extensión limpio (`predict_with_ai`) listo para conectar tu propio modelo
-    de Machine Learning / Deep Learning / RL / LLM.
+    Bot Institucional de Trading para Bitso Paper Trading.
+    Estrategia Principal: 'trend_pullback_h1_m15' (Tendencia H1 + Retroceso M15 + Ratio 1:2)
+    Reglas de Compra: 6/6
+    Reglas de Venta: 6/6
+    Filtros de Exclusión (No operar): 5
+    Ratio Riesgo/Beneficio: 1:2 Estricto
     """
+
+    SUPPORTED_STRATEGIES = (
+        "trend_pullback_h1_m15",
+        "ai_custom",
+        "orderbook_imbalance",
+        "sma_rsi",
+    )
 
     def __init__(self) -> None:
         self.enabled: bool = True
-        self.multi_asset_auto: bool = True  # Escanea las mejores oportunidades
-        self.auto_tp_sl_by_coin: bool = True  # TP y SL dinámicos automatizados
-        self.strategy: str = "ai_custom"
+        self.multi_asset_auto: bool = True  # Escaneo automático de oportunidades
+        self.auto_tp_sl_by_coin: bool = True  # Gestión dinámica 1:2 R:R
+        self.strategy: str = "trend_pullback_h1_m15"  # Estrategia por defecto
         self.book: str = "btc_mxn"
-        self.trade_size_pct: float = 45.0  # Asignación concentrada (máx 2 posiciones de ~45k cada una)
-        self.take_profit_pct: float = 0.55  # Meta de Take Profit sustancial (+0.55% = ~$250 MXN)
-        self.stop_loss_pct: float = 0.35    # SL estricto máximo (-0.35% = ~$155 MXN)
-        self.trailing_arm_pct: float = 0.30 # Activa candado de ganancia al tocar +0.30%
-        self.trailing_drop_pct: float = 0.08 # Asegura ganancia manteniendo al menos +0.22%
-        self.min_hold_seconds: int = 240    # Periodo de maduración obligatorio (4 minutos anti-churn)
-        self.cooldown_seconds: int = 75     # Cooldown entre órdenes del bot (elimina sobre-operación)
+        self.trade_size_pct: float = 40.0  # Asignación por operación (2 posiciones principales)
+        self.take_profit_pct: float = 1.00  # TP base 1:2 (+1.00% meta)
+        self.stop_loss_pct: float = 0.50    # SL base 1:2 (-0.50% riesgo)
+        self.risk_reward_ratio: float = 2.0  # Exactamente 1:2
+        self.trailing_arm_pct: float = 0.0   # Desactivado para no cortar ganancias prematuramente
+        self.trailing_drop_pct: float = 0.0
+        self.min_hold_seconds: int = 180    # Tiempo mínimo de maduración de la posición
+        self.cooldown_seconds: int = 60     # Cooldown entre órdenes
         self.last_trade_ts: float = 0.0
+        self.trend_engine = TrendPullbackEngine()
+        self.last_checklist: Dict[str, Any] = {}
         self.last_signal: Dict[str, Any] = {
             "action": "HOLD",
             "confidence": 0.5,
-            "reason": "Esperando activación o datos suficientes...",
+            "reason": "Iniciando motor de tendencia H1 / retroceso M15...",
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "features": {},
+            "checklist": {},
+            "risk_reward": {"ratio": "1:2", "sl_pct": 0.50, "tp_pct": 1.00},
         }
         self.decision_log: List[Dict[str, Any]] = []
 
@@ -41,16 +56,18 @@ class TradingBot:
             self.multi_asset_auto = bool(cfg["multi_asset_auto"])
         if "auto_tp_sl_by_coin" in cfg:
             self.auto_tp_sl_by_coin = bool(cfg["auto_tp_sl_by_coin"])
-        if "strategy" in cfg and cfg["strategy"] in ("sma_rsi", "orderbook_imbalance", "ai_custom"):
+        if "strategy" in cfg and cfg["strategy"] in self.SUPPORTED_STRATEGIES:
             self.strategy = cfg["strategy"]
         if "book" in cfg:
             self.book = str(cfg["book"])
         if "trade_size_pct" in cfg:
             self.trade_size_pct = max(2.0, min(100.0, float(cfg["trade_size_pct"])))
-        if "take_profit_pct" in cfg:
-            self.take_profit_pct = max(0.05, float(cfg["take_profit_pct"]))
         if "stop_loss_pct" in cfg:
-            self.stop_loss_pct = max(0.05, float(cfg["stop_loss_pct"]))
+            self.stop_loss_pct = max(0.15, float(cfg["stop_loss_pct"]))
+            # Mantener relación 1:2 estricta
+            self.take_profit_pct = round(self.stop_loss_pct * self.risk_reward_ratio, 2)
+        if "take_profit_pct" in cfg and "stop_loss_pct" not in cfg:
+            self.take_profit_pct = max(0.30, float(cfg["take_profit_pct"]))
         if "cooldown_seconds" in cfg:
             self.cooldown_seconds = max(2, int(cfg["cooldown_seconds"]))
         return self.get_config()
@@ -65,9 +82,11 @@ class TradingBot:
             "trade_size_pct": self.trade_size_pct,
             "take_profit_pct": self.take_profit_pct,
             "stop_loss_pct": self.stop_loss_pct,
+            "risk_reward_ratio": "1:2",
             "cooldown_seconds": self.cooldown_seconds,
             "last_signal": self.last_signal,
-            "decision_log": self.decision_log[-25:],
+            "last_checklist": self.last_checklist,
+            "decision_log": self.decision_log[-30:],
         }
 
     @staticmethod
@@ -92,10 +111,6 @@ class TradingBot:
         position: Dict[str, Any],
         cash_mxn: float,
     ) -> Dict[str, float]:
-        """
-        Construye el vector de características (features) normalizadas en tiempo real
-        que alimenta tanto a las estrategias clásicas como a tu futura IA.
-        """
         prices = [float(p["price"]) for p in price_history if p.get("price", 0) > 0]
         last_price = float(ticker.get("last") or (prices[-1] if prices else 0.0))
         if not prices and last_price > 0:
@@ -134,68 +149,33 @@ class TradingBot:
             "unrealized_pnl_pct": round(unrealized_pnl_pct, 3),
         }
 
-    # =========================================================================
-    # PUNTO DE INTEGRACIÓN PARA TU IA (PyTorch / Scikit-Learn / XGBoost / LLM)
-    # =========================================================================
     def predict_with_ai(self, features: Dict[str, float]) -> Dict[str, Any]:
-        """
-        Reemplaza el cuerpo de este método con tu propio modelo de IA entrenado:
-            ejemplo:
-                x = np.array([[features['rsi_14'], features['sma_diff_bps'], features['ob_imbalance']]])
-                probs = self.model.predict_proba(x)[0]  # [p_hold, p_buy, p_sell]
-        Por defecto ejecuta un modelo de scoring multifactorial ponderado (Neurona Lineal + Sigmoid).
-        """
-        # Score direccional combinando tendencia, reversión RSI y presión en libro de órdenes
-        rsi_norm = (50.0 - features["rsi_14"]) / 50.0  # Positivo cuando está sobrevendido (<50)
-        ob_norm = (features["ob_imbalance"] - 0.5) * 2.0  # [-1, +1] presión de compra en OrderBook
+        """Punto de integración para modelos de ML adicionales."""
+        rsi_norm = (50.0 - features["rsi_14"]) / 50.0
+        ob_norm = (features["ob_imbalance"] - 0.5) * 2.0
         trend_norm = max(-1.0, min(1.0, features["sma_diff_bps"] / 25.0))
         mom_norm = max(-1.0, min(1.0, features["momentum_5_bps"] / 30.0))
 
-        # Pesos del ensemble de ejemplo
         alpha_score = (0.35 * ob_norm) + (0.30 * rsi_norm) + (0.20 * trend_norm) + (0.15 * mom_norm)
         confidence = min(0.98, round(0.50 + abs(alpha_score) * 0.48, 2))
 
-        # Gestión automática de Take Profit / Stop Loss si tenemos posición abierta
-        if features["exposure_ratio"] > 0.02:
-            if features["unrealized_pnl_pct"] >= self.take_profit_pct:
-                return {
-                    "action": "SELL",
-                    "confidence": 0.92,
-                    "reason": f"[IA Risk Manager] Take Profit alcanzado ({features['unrealized_pnl_pct']:+.2f}% >= +{self.take_profit_pct:.2f}%)",
-                }
-            if features["unrealized_pnl_pct"] <= -self.stop_loss_pct:
-                return {
-                    "action": "SELL",
-                    "confidence": 0.95,
-                    "reason": f"[IA Risk Manager] Stop Loss activado ({features['unrealized_pnl_pct']:+.2f}% <= -{self.stop_loss_pct:.2f}%)",
-                }
-
-        if alpha_score >= 0.14 and features["exposure_ratio"] < 0.85:
+        if alpha_score >= 0.16 and features["exposure_ratio"] < 0.85:
             return {
                 "action": "BUY",
                 "confidence": confidence,
-                "reason": (
-                    f"[IA Score={alpha_score:+.2f}] Señal alcista: OB Imbalance={features['ob_imbalance']*100:.1f}%, "
-                    f"RSI={features['rsi_14']:.1f}, ΔSMA={features['sma_diff_bps']:+.1f} bps"
-                ),
+                "reason": f"[IA Score={alpha_score:+.2f}] Señal alcista: OB={features['ob_imbalance']*100:.1f}%, RSI={features['rsi_14']:.1f}",
             }
-        elif alpha_score <= -0.14 and features["exposure_ratio"] > 0.02:
+        elif alpha_score <= -0.16 and features["exposure_ratio"] > 0.02:
             return {
                 "action": "SELL",
                 "confidence": confidence,
-                "reason": (
-                    f"[IA Score={alpha_score:+.2f}] Señal bajista: OB Imbalance={features['ob_imbalance']*100:.1f}%, "
-                    f"RSI={features['rsi_14']:.1f}, ΔSMA={features['sma_diff_bps']:+.1f} bps"
-                ),
+                "reason": f"[IA Score={alpha_score:+.2f}] Señal bajista: OB={features['ob_imbalance']*100:.1f}%, RSI={features['rsi_14']:.1f}",
             }
 
         return {
             "action": "HOLD",
             "confidence": confidence,
-            "reason": (
-                f"[IA Score={alpha_score:+.2f}] Neutral (umbral ±0.14) | "
-                f"RSI={features['rsi_14']:.1f}, OB={features['ob_imbalance']*100:.1f}%"
-            ),
+            "reason": f"[IA Neutral={alpha_score:+.2f}] Esperando configuración de alta certeza",
         }
 
     def evaluate(
@@ -205,36 +185,105 @@ class TradingBot:
         order_book: Dict[str, Any],
         position: Dict[str, Any],
         cash_mxn: float,
+        candles_h1: Optional[List[Dict[str, float]]] = None,
+        candles_m15: Optional[List[Dict[str, float]]] = None,
         force: bool = False,
     ) -> Dict[str, Any]:
-        """Evalúa el estado del mercado y devuelve la decisión del bot."""
+        """
+        Evalúa el estado del mercado utilizando la estrategia configurada.
+        Por defecto evalúa la Estrategia Institucional de Tendencia H1 + Retroceso M15 con R:R 1:2.
+        """
         features = self.extract_features(price_history, ticker, order_book, position, cash_mxn)
         now_ts = time.time()
         now_iso = datetime.now(timezone.utc).isoformat()
-
         has_position = features["exposure_ratio"] > 0.02
         unr_pnl = features["unrealized_pnl_pct"]
+        book = ticker.get("book", self.book)
+        last_price = float(ticker.get("last", 0.0))
+        spread_bps = float(ticker.get("spread_bps", 0.0))
 
-        # 1. Reglas universales de protección (Take Profit / Stop Loss)
-        if has_position:
-            if unr_pnl >= self.take_profit_pct:
+        # 1. EVALUACIÓN CON LA ESTRATEGIA PRINCIPAL: 'trend_pullback_h1_m15'
+        if self.strategy == "trend_pullback_h1_m15" and candles_h1 and candles_m15:
+            analysis = self.trend_engine.evaluate_strategy(
+                book=book,
+                current_price=last_price,
+                candles_h1=candles_h1,
+                candles_m15=candles_m15,
+                spread_bps=spread_bps,
+                available_cash_mxn=cash_mxn,
+                position_exposure=features["exposure_ratio"],
+            )
+            self.last_checklist = {
+                "book": book,
+                "h1": analysis.get("h1"),
+                "m15": analysis.get("m15"),
+                "checklist_buy": analysis.get("checklist_buy"),
+                "checklist_sell": analysis.get("checklist_sell"),
+                "exclusion_filters": analysis.get("exclusion_filters"),
+                "risk_reward": analysis.get("risk_reward"),
+            }
+
+            # Si ya tenemos posición abierta en este activo, gestionar salida 1:2
+            if has_position:
+                sl_target = float(position.get("auto_sl_pct") or self.stop_loss_pct)
+                tp_target = float(position.get("auto_tp_pct") or (sl_target * 2.0))
+
+                # Salida por Take Profit 1:2
+                if unr_pnl >= tp_target:
+                    decision = {
+                        "action": "SELL",
+                        "confidence": 0.98,
+                        "reason": f"[Take Profit 1:2 Alcanzado] {book.upper()} ganó +{unr_pnl:+.2f}% (Meta 1:2: +{tp_target:.2f}%)",
+                    }
+                # Salida por Stop Loss estructural
+                elif unr_pnl <= -sl_target:
+                    decision = {
+                        "action": "SELL",
+                        "confidence": 0.98,
+                        "reason": f"[Stop Loss Estructural] {book.upper()} cortó en {unr_pnl:+.2f}% (SL: -{sl_target:.2f}%)",
+                    }
+                # Salida por señal de quiebre bajista M15
+                elif analysis["signal"] == "SELL":
+                    decision = {
+                        "action": "SELL",
+                        "confidence": analysis["confidence"],
+                        "reason": f"[Salida Técnica M15] {analysis['reason']}",
+                    }
+                else:
+                    decision = {
+                        "action": "HOLD",
+                        "confidence": 0.50,
+                        "reason": f"Manteniendo posición abierta en {book.upper()} (PnL: {unr_pnl:+.2f}% | TP: +{tp_target:.2f}% | SL: -{sl_target:.2f}%)",
+                    }
+            else:
+                # Sin posición: evaluar entrada según señal 6/6
                 decision = {
-                    "action": "SELL",
-                    "confidence": 0.94,
-                    "reason": f"Take Profit ejecutado ({unr_pnl:+.2f}% >= +{self.take_profit_pct:.2f}%)",
+                    "action": analysis["signal"],
+                    "confidence": analysis["confidence"],
+                    "reason": analysis["reason"],
                 }
-            elif unr_pnl <= -self.stop_loss_pct:
-                decision = {
-                    "action": "SELL",
-                    "confidence": 0.96,
-                    "reason": f"Stop Loss ejecutado ({unr_pnl:+.2f}% <= -{self.stop_loss_pct:.2f}%)",
-                }
+
+        else:
+            # Estrategias alternativas / secundarias
+            if has_position:
+                if unr_pnl >= self.take_profit_pct:
+                    decision = {
+                        "action": "SELL",
+                        "confidence": 0.94,
+                        "reason": f"Take Profit ejecutado ({unr_pnl:+.2f}% >= +{self.take_profit_pct:.2f}%)",
+                    }
+                elif unr_pnl <= -self.stop_loss_pct:
+                    decision = {
+                        "action": "SELL",
+                        "confidence": 0.96,
+                        "reason": f"Stop Loss ejecutado ({unr_pnl:+.2f}% <= -{self.stop_loss_pct:.2f}%)",
+                    }
+                else:
+                    decision = self._run_strategy(features, has_position, force=force)
             else:
                 decision = self._run_strategy(features, has_position, force=force)
-        else:
-            decision = self._run_strategy(features, has_position, force=force)
 
-        # Verificar cooldown salvo cuando el usuario presiona "Forzar Paso del Bot"
+        # Respetar tiempo de enfriamiento (salvo cuando force=True)
         if not force and decision["action"] in ("BUY", "SELL"):
             elapsed = now_ts - self.last_trade_ts
             if elapsed < self.cooldown_seconds:
@@ -252,6 +301,12 @@ class TradingBot:
             "strategy": self.strategy,
             "timestamp": now_iso,
             "features": features,
+            "checklist": self.last_checklist,
+            "risk_reward": {
+                "ratio": "1:2",
+                "sl_pct": self.stop_loss_pct,
+                "tp_pct": self.take_profit_pct,
+            },
         }
         self.last_signal = signal
         self.decision_log.append(signal)
@@ -262,59 +317,45 @@ class TradingBot:
 
     def _run_strategy(self, features: Dict[str, float], has_position: bool, force: bool = False) -> Dict[str, Any]:
         if self.strategy == "ai_custom":
-            res = self.predict_with_ai(features)
-            if force and res["action"] == "HOLD":
-                # Si el usuario fuerza evaluación manual y el score es moderado, mostrar acción demostrativa
-                if features["ob_imbalance"] >= 0.48 and not has_position:
-                    return {
-                        "action": "BUY",
-                        "confidence": 0.68,
-                        "reason": f"[Paso Forzado IA] Entrada exploratoria con RSI={features['rsi_14']:.1f} y OB={features['ob_imbalance']*100:.1f}%",
-                    }
-            return res
-
+            return self.predict_with_ai(features)
         elif self.strategy == "orderbook_imbalance":
             imb = features["ob_imbalance"]
             spread = features["spread_bps"]
-            if imb >= 0.56 and spread < 35.0:
+            if imb >= 0.58 and spread < 25.0:
                 return {
                     "action": "BUY",
-                    "confidence": round(min(0.95, imb + 0.15), 2),
-                    "reason": f"Fuerte presión de compra en OrderBook Bitso ({imb*100:.1f}% bids vs asks, spread {spread:.1f} bps)",
+                    "confidence": 0.88,
+                    "reason": f"Fuerte presión compradora en OrderBook ({imb*100:.1f}% bids)",
                 }
             elif imb <= 0.42 and has_position:
                 return {
                     "action": "SELL",
-                    "confidence": round(min(0.95, (1.0 - imb) + 0.15), 2),
-                    "reason": f"Presión vendedora en OrderBook Bitso ({(1-imb)*100:.1f}% asks dominando)",
+                    "confidence": 0.88,
+                    "reason": f"Presión vendedora en OrderBook ({(1-imb)*100:.1f}% asks)",
                 }
             return {
                 "action": "HOLD",
-                "confidence": 0.55,
-                "reason": f"OrderBook equilibrado (Bids: {imb*100:.1f}% / Asks: {(1-imb)*100:.1f}%)",
+                "confidence": 0.50,
+                "reason": f"OrderBook equilibrado ({imb*100:.1f}% bids)",
             }
-
-        # Estrategia por defecto: "sma_rsi" (Cruce de Medias + RSI)
-        rsi = features["rsi_14"]
-        sma_diff = features["sma_diff_bps"]
-        if rsi < 38.0 or (sma_diff > 1.5 and rsi < 62.0):
+        else:
+            # sma_rsi
+            rsi = features["rsi_14"]
+            sma_diff = features["sma_diff_bps"]
+            if rsi < 35.0 and sma_diff > 0:
+                return {
+                    "action": "BUY",
+                    "confidence": 0.80,
+                    "reason": f"Rebote de sobreventa RSI ({rsi:.1f}) con SMA alineada",
+                }
+            elif rsi > 70.0 and has_position:
+                return {
+                    "action": "SELL",
+                    "confidence": 0.85,
+                    "reason": f"Toma de ganancia por sobrecompra RSI ({rsi:.1f})",
+                }
             return {
-                "action": "BUY",
-                "confidence": 0.78 if rsi < 38.0 else 0.72,
-                "reason": (
-                    f"Señal de Compra SMA+RSI: RSI={rsi:.1f} "
-                    f"({'Sobreventa' if rsi < 38 else 'Tendencia Alcista'}), ΔSMA={sma_diff:+.1f} bps"
-                ),
+                "action": "HOLD",
+                "confidence": 0.50,
+                "reason": f"RSI={rsi:.1f}, SMA Diff={sma_diff:+.1f} bps",
             }
-        elif has_position and (rsi > 65.0 or sma_diff < -2.5):
-            return {
-                "action": "SELL",
-                "confidence": 0.80,
-                "reason": f"Señal de Venta SMA+RSI: RSI={rsi:.1f}, ΔSMA={sma_diff:+.1f} bps",
-            }
-
-        return {
-            "action": "HOLD",
-            "confidence": 0.52,
-            "reason": f"Esperando cruce óptimo (RSI={rsi:.1f}, ΔSMA={sma_diff:+.1f} bps)",
-        }
