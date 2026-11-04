@@ -9,10 +9,10 @@ class OpportunityScanner:
     """
 
     ARBITRAGE_PAIRS = [
-        {"symbol": "USD", "name": "Dólar Estadounidense", "mxn_book": "usd_mxn", "ref_book": "usd_mxn"},
-        {"symbol": "ORO", "name": "Oro COMEX / Físico", "mxn_book": "gc_fut", "ref_book": "paxg_usd"},
-        {"symbol": "WTI", "name": "Petróleo WTI / Brent", "mxn_book": "cl_fut", "ref_book": "brent_fut"},
-        {"symbol": "EUR", "name": "Euro FX", "mxn_book": "eur_mxn", "ref_book": "eur_mxn"},
+        {"symbol": "ORO", "name": "Oro COMEX vs Físico", "mxn_book": "gc_fut", "usd_book": "paxg_usd"},
+        {"symbol": "WTI", "name": "Petróleo WTI vs Brent", "mxn_book": "cl_fut", "usd_book": "brent_fut"},
+        {"symbol": "USD", "name": "Dólar Estadounidense", "mxn_book": "usd_mxn", "usd_book": "usd_mxn"},
+        {"symbol": "EUR", "name": "Euro FX", "mxn_book": "eur_mxn", "usd_book": "eur_mxn"},
     ]
 
     PREMIER_LIQUID_PAIRS = {
