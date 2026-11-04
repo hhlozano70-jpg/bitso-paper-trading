@@ -320,7 +320,7 @@ class PaperTradingEngine:
 
         by_book_map: Dict[str, Dict[str, Any]] = {}
         for t in self.trades:
-            b = t.get("book", "btc_mxn")
+            b = t.get("book", "usd_mxn")
             entry = by_book_map.setdefault(
                 b,
                 {
@@ -419,7 +419,7 @@ class PaperTradingEngine:
     def get_summary(
         self,
         tickers: Dict[str, Dict[str, Any]],
-        active_book: str = "btc_mxn",
+        active_book: str = "usd_mxn",
         opp_by_book: Optional[Dict[str, Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         holdings_value_mxn = 0.0

@@ -9,17 +9,15 @@ class OpportunityScanner:
     """
 
     ARBITRAGE_PAIRS = [
-        {"symbol": "BTC", "name": "Bitcoin", "mxn_book": "btc_mxn", "usd_book": "btc_usd"},
-        {"symbol": "ETH", "name": "Ethereum", "mxn_book": "eth_mxn", "usd_book": "eth_usd"},
-        {"symbol": "SOL", "name": "Solana", "mxn_book": "sol_mxn", "usd_book": "sol_usd"},
-        {"symbol": "XRP", "name": "Ripple", "mxn_book": "xrp_mxn", "usd_book": "xrp_usd"},
-        {"symbol": "LTC", "name": "Litecoin", "mxn_book": "ltc_mxn", "usd_book": "ltc_usd"},
-        {"symbol": "MANA", "name": "Decentraland", "mxn_book": "mana_mxn", "usd_book": "mana_usd"},
+        {"symbol": "USD", "name": "Dólar Estadounidense", "mxn_book": "usd_mxn", "ref_book": "usd_mxn"},
+        {"symbol": "ORO", "name": "Oro COMEX / Físico", "mxn_book": "gc_fut", "ref_book": "paxg_usd"},
+        {"symbol": "WTI", "name": "Petróleo WTI / Brent", "mxn_book": "cl_fut", "ref_book": "brent_fut"},
+        {"symbol": "EUR", "name": "Euro FX", "mxn_book": "eur_mxn", "ref_book": "eur_mxn"},
     ]
 
     PREMIER_LIQUID_PAIRS = {
-        "btc_mxn", "eth_mxn", "sol_mxn", "xrp_mxn",
-        "nvda_stk", "aapl_stk", "nq_fut"
+        "usd_mxn", "gc_fut", "cl_fut", "eur_mxn", "paxg_usd", "brent_fut",
+        "gbp_mxn", "si_fut", "cad_mxn", "chf_mxn", "jpy_mxn", "ng_fut"
     }
 
     @staticmethod
@@ -28,46 +26,51 @@ class OpportunityScanner:
         price_history_by_book: Dict[str, List[Dict[str, Any]]],
     ) -> Dict[str, str]:
         """
-        Detecta el régimen macro de mercado para filtrar operaciones contra-tendencia:
-          - crypto_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según BTC/MXN
-          - equities_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según NQ-FUT / ES-FUT
+        Detecta el régimen macro de materias primas y divisas para filtrar operaciones contra-tendencia:
+          - commodities_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según Oro COMEX (GC=F)
+          - oil_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según Petróleo WTI (CL=F)
+          - forex_regime: 'BULLISH', 'BEARISH' o 'NEUTRAL' según Dólar USD/MXN
         """
-        # 1. Régimen Cripto (Benchmark: BTC)
-        btc = tickers.get("btc_mxn")
-        crypto_regime = "NEUTRAL"
-        if btc:
-            btc_last = float(btc.get("last") or 0.0)
-            btc_vwap = float(btc.get("vwap") or btc_last)
-            btc_change = float(btc.get("change_24_pct") or 0.0)
-            btc_hist = price_history_by_book.get("btc_mxn", [])
-            btc_sma_diff = 0.0
-            if len(btc_hist) >= 4:
-                p_short = sum(p["price"] for p in btc_hist[-4:]) / 4
-                p_long = sum(p["price"] for p in btc_hist[-12:]) / min(12, len(btc_hist))
-                btc_sma_diff = (p_short - p_long) / p_long * 10000.0 if p_long > 0 else 0.0
+        # 1. Régimen Oro (Benchmark: GC_FUT)
+        gold = tickers.get("gc_fut")
+        commodities_regime = "NEUTRAL"
+        if gold:
+            g_last = float(gold.get("last") or 0.0)
+            g_vwap = float(gold.get("vwap") or g_last)
+            g_change = float(gold.get("change_24_pct") or 0.0)
+            if g_last >= g_vwap or g_change >= 0.15:
+                commodities_regime = "BULLISH"
+            elif g_last < g_vwap * 0.998 or g_change <= -0.4:
+                commodities_regime = "BEARISH"
 
-            if (btc_last >= btc_vwap * 0.999 or btc_change >= 0.3) and btc_sma_diff >= -0.8:
-                crypto_regime = "BULLISH"
-            elif (btc_last < btc_vwap * 0.995 or btc_change <= -1.2) and btc_sma_diff < -1.5:
-                crypto_regime = "BEARISH"
-            else:
-                crypto_regime = "NEUTRAL"
+        # 2. Régimen Petróleo (Benchmark: CL_FUT)
+        oil = tickers.get("cl_fut")
+        oil_regime = "NEUTRAL"
+        if oil:
+            o_last = float(oil.get("last") or 0.0)
+            o_vwap = float(oil.get("vwap") or o_last)
+            o_change = float(oil.get("change_24_pct") or 0.0)
+            if o_last >= o_vwap or o_change >= 0.2:
+                oil_regime = "BULLISH"
+            elif o_last < o_vwap * 0.996 or o_change <= -0.8:
+                oil_regime = "BEARISH"
 
-        # 2. Régimen Bursátil (Benchmark: NQ-FUT / ES-FUT)
-        nq = tickers.get("nq_fut") or tickers.get("es_fut")
-        equities_regime = "NEUTRAL"
-        if nq:
-            nq_last = float(nq.get("last") or 0.0)
-            nq_vwap = float(nq.get("vwap") or nq_last)
-            nq_change = float(nq.get("change_24_pct") or 0.0)
-            if nq_last >= nq_vwap or nq_change >= 0.2:
-                equities_regime = "BULLISH"
-            elif nq_last < nq_vwap * 0.997 or nq_change <= -0.6:
-                equities_regime = "BEARISH"
+        # 3. Régimen Divisas (Benchmark: USD_MXN)
+        usd = tickers.get("usd_mxn")
+        forex_regime = "NEUTRAL"
+        if usd:
+            u_last = float(usd.get("last") or 0.0)
+            u_vwap = float(usd.get("vwap") or u_last)
+            u_change = float(usd.get("change_24_pct") or 0.0)
+            if u_last >= u_vwap or u_change >= 0.1:
+                forex_regime = "BULLISH"
+            elif u_last < u_vwap * 0.998 or u_change <= -0.3:
+                forex_regime = "BEARISH"
 
         return {
-            "crypto_regime": crypto_regime,
-            "equities_regime": equities_regime,
+            "commodities_regime": commodities_regime,
+            "oil_regime": oil_regime,
+            "forex_regime": forex_regime,
         }
 
     @staticmethod
@@ -155,8 +158,9 @@ class OpportunityScanner:
     ) -> List[Dict[str, Any]]:
         opportunities: List[Dict[str, Any]] = []
         regimes = self.detect_market_regimes(tickers, price_history_by_book)
-        crypto_regime = regimes.get("crypto_regime", "NEUTRAL")
-        equities_regime = regimes.get("equities_regime", "NEUTRAL")
+        commodities_regime = regimes.get("commodities_regime", "NEUTRAL")
+        oil_regime = regimes.get("oil_regime", "NEUTRAL")
+        forex_regime = regimes.get("forex_regime", "NEUTRAL")
 
         for book, tk in tickers.items():
             last = float(tk.get("last") or 0.0)
@@ -253,40 +257,44 @@ class OpportunityScanner:
                 score -= min(45.0, 20.0 + (spread_bps - 8.0) * 3.0)
                 reasons.append(f"Spread alto ({spread_bps:.1f} bps bloqueado)")
 
-            # Filtro 1: Alineación con Régimen Macro (Evitar comprar contra tendencia general)
-            is_crypto = category in ("Cripto MXN", "Layer-1 & DeFi", "Alta Volatilidad")
-            is_equity_futures = category in ("Acciones", "Futuros")
+            # Filtro 1: Alineación con Régimen Macro de Activos Estables
+            is_gold_metal = category == "Oro & Metales Refugio"
+            is_energy = category == "Petróleo & Energía"
+            is_forex = category == "Divisas & Monedas"
             macro_status = "Alineado"
 
-            if is_crypto:
-                if crypto_regime == "BEARISH":
-                    if book != "btc_mxn":
-                        score -= 26.0
-                        macro_status = "BTC Bajista (Bloqueado)"
-                        reasons.append("Filtro Macro: BTC en tendencia bajista (altcoin bloqueada)")
-                    else:
-                        score -= 12.0
-                        macro_status = "BTC en Caída"
-                elif crypto_regime == "BULLISH":
-                    score += 6.0
-                    macro_status = "Cripto Alcista"
-            elif is_equity_futures:
-                if equities_regime == "BEARISH":
-                    score -= 24.0
-                    macro_status = "NQ/ES Bajista (Bloqueado)"
-                    reasons.append("Filtro Macro: Índices NQ/ES en tendencia bajista")
-                elif equities_regime == "BULLISH":
-                    score += 6.0
-                    macro_status = "Bolsa Alcista"
+            if is_gold_metal:
+                if commodities_regime == "BEARISH":
+                    score -= 18.0
+                    macro_status = "Oro Bajista"
+                    reasons.append("Filtro Macro: Oro/Metales bajo presión vendedora")
+                elif commodities_regime == "BULLISH":
+                    score += 7.0
+                    macro_status = "Oro Refugio Alcista"
+            elif is_energy:
+                if oil_regime == "BEARISH":
+                    score -= 18.0
+                    macro_status = "Petróleo Bajista"
+                    reasons.append("Filtro Macro: Petróleo WTI bajo presión bajista")
+                elif oil_regime == "BULLISH":
+                    score += 7.0
+                    macro_status = "Energía Alcista"
+            elif is_forex:
+                if forex_regime == "BEARISH" and book == "usd_mxn":
+                    score -= 14.0
+                    macro_status = "USD Bajo VWAP"
+                elif forex_regime == "BULLISH":
+                    score += 5.0
+                    macro_status = "Divisa Fuerte"
 
-            # Filtro 2: Estricta preferencia por Activos Líquidos Premier (Excluye divisas fiat, memes e ilíquidos)
+            # Filtro 2: Estricta verificación de liquidez institucional
             is_premier = book in self.PREMIER_LIQUID_PAIRS
             if is_premier:
                 score += 15.0
-                reasons.append("Activo Líquido Premier")
+                reasons.append("Activo Estable Institucional")
             else:
-                score -= 35.0
-                reasons.append("Excluido de auto-scalper (Falta de liquidez o spread amplio)")
+                score -= 30.0
+                reasons.append("Excluido de auto-trading (baja liquidez)")
 
             score = round(max(10.0, min(98.0, score)), 1)
 

@@ -3,61 +3,26 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
-# Catálogo expandido de 39 activos globales: Cripto MXN, Acciones (Wall Street), Futuros (CME/NYMEX/COMEX),
-# Oro & RWA, Divisas & FX, Layer-1 & DeFi, y Memes.
+# Catálogo Institucional de Activos Estables: Divisas / Monedas Fiat, Oro y Petróleo.
+# Criptomonedas eliminadas al 100% para máxima estabilidad patrimonial.
 ASSET_CATALOG: Dict[str, Dict[str, str]] = {
-    # 1. Cripto directo en MXN (Bitso)
-    "btc_mxn": {"name": "Bitcoin", "symbol": "BTC", "pair": "BTC/MXN", "category": "Cripto MXN", "quote": "MXN", "source": "bitso"},
-    "eth_mxn": {"name": "Ethereum", "symbol": "ETH", "pair": "ETH/MXN", "category": "Cripto MXN", "quote": "MXN", "source": "bitso"},
-    "sol_mxn": {"name": "Solana", "symbol": "SOL", "pair": "SOL/MXN", "category": "Cripto MXN", "quote": "MXN", "source": "bitso"},
-    "xrp_mxn": {"name": "Ripple", "symbol": "XRP", "pair": "XRP/MXN", "category": "Cripto MXN", "quote": "MXN", "source": "bitso"},
-    "ltc_mxn": {"name": "Litecoin", "symbol": "LTC", "pair": "LTC/MXN", "category": "Cripto MXN", "quote": "MXN", "source": "bitso"},
-    "mana_mxn": {"name": "Decentraland", "symbol": "MANA", "pair": "MANA/MXN", "category": "Cripto MXN", "quote": "MXN", "source": "bitso"},
+    # 1. Divisas & Monedas (Forex / Fiat institucional contra Peso Mexicano MXN)
+    "usd_mxn": {"name": "Dólar Estadounidense", "symbol": "USD", "pair": "USD/MXN", "category": "Divisas & Monedas", "quote": "MXN", "source": "bitso"},
+    "eur_mxn": {"name": "Euro", "symbol": "EUR", "pair": "EUR/MXN*", "category": "Divisas & Monedas", "quote": "MXN", "source": "yahoo", "yf_ticker": "EURMXN=X"},
+    "gbp_mxn": {"name": "Libra Esterlina", "symbol": "GBP", "pair": "GBP/MXN*", "category": "Divisas & Monedas", "quote": "MXN", "source": "yahoo", "yf_ticker": "GBPMXN=X"},
+    "cad_mxn": {"name": "Dólar Canadiense", "symbol": "CAD", "pair": "CAD/MXN*", "category": "Divisas & Monedas", "quote": "MXN", "source": "yahoo", "yf_ticker": "CADMXN=X"},
+    "chf_mxn": {"name": "Franco Suizo", "symbol": "CHF", "pair": "CHF/MXN*", "category": "Divisas & Monedas", "quote": "MXN", "source": "yahoo", "yf_ticker": "CHFMXN=X"},
+    "jpy_mxn": {"name": "Yen Japonés", "symbol": "JPY", "pair": "JPY/MXN*", "category": "Divisas & Monedas", "quote": "MXN", "source": "yahoo", "yf_ticker": "JPYMXN=X"},
 
-    # 2. Acciones Globales / Wall Street (Cotización en vivo convertida a MXN)
-    "nvda_stk": {"name": "NVIDIA Corp.", "symbol": "NVDA", "pair": "NVDA/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "NVDA"},
-    "tsla_stk": {"name": "Tesla Inc.", "symbol": "TSLA", "pair": "TSLA/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "TSLA"},
-    "aapl_stk": {"name": "Apple Inc.", "symbol": "AAPL", "pair": "AAPL/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "AAPL"},
-    "msft_stk": {"name": "Microsoft Corp.", "symbol": "MSFT", "pair": "MSFT/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "MSFT"},
-    "amzn_stk": {"name": "Amazon.com", "symbol": "AMZN", "pair": "AMZN/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "AMZN"},
-    "meta_stk": {"name": "Meta Platforms", "symbol": "META", "pair": "META/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "META"},
-    "googl_stk": {"name": "Alphabet (Google)", "symbol": "GOOGL", "pair": "GOOGL/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "GOOGL"},
-    "amd_stk": {"name": "AMD Inc.", "symbol": "AMD", "pair": "AMD/MXN*", "category": "Acciones", "quote": "USD", "source": "yahoo", "yf_ticker": "AMD"},
+    # 2. Oro & Metales de Reserva Refugio (COMEX / Bóvedas de Oro Físico)
+    "gc_fut": {"name": "Futuros Oro COMEX", "symbol": "ORO", "pair": "ORO/MXN*", "category": "Oro & Metales Refugio", "quote": "USD", "source": "yahoo", "yf_ticker": "GC=F"},
+    "paxg_usd": {"name": "PAX Gold (Oro Físico Bóveda)", "symbol": "PAXG", "pair": "PAXG/MXN*", "category": "Oro & Metales Refugio", "quote": "USD", "source": "bitso"},
+    "si_fut": {"name": "Futuros Plata COMEX", "symbol": "PLATA", "pair": "PLATA/MXN*", "category": "Oro & Metales Refugio", "quote": "USD", "source": "yahoo", "yf_ticker": "SI=F"},
 
-    # 3. Futuros de Índices, Energía y Metales (CME / COMEX / NYMEX 24h en MXN)
-    "nq_fut": {"name": "Futuros Nasdaq 100", "symbol": "NQ-FUT", "pair": "NQ100/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "NQ=F"},
-    "es_fut": {"name": "Futuros S&P 500", "symbol": "ES-FUT", "pair": "SP500/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "ES=F"},
-    "ym_fut": {"name": "Futuros Dow Jones", "symbol": "YM-FUT", "pair": "DOW/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "YM=F"},
-    "cl_fut": {"name": "Futuros Petróleo WTI", "symbol": "WTI-FUT", "pair": "WTI/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "CL=F"},
-    "gc_fut": {"name": "Futuros Oro COMEX", "symbol": "GOLD-FUT", "pair": "GC/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "GC=F"},
-    "si_fut": {"name": "Futuros Plata COMEX", "symbol": "SILV-FUT", "pair": "SI/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "SI=F"},
-    "ng_fut": {"name": "Futuros Gas Natural", "symbol": "NGAS-FUT", "pair": "NG/MXN*", "category": "Futuros", "quote": "USD", "source": "yahoo", "yf_ticker": "NG=F"},
-
-    # 4. Materias Primas Tokenizadas (Oro) & RWA (Bitso)
-    "paxg_usd": {"name": "PAX Gold (Oro Físico)", "symbol": "PAXG", "pair": "PAXG/MXN*", "category": "Oro & RWA", "quote": "USD", "source": "bitso"},
-    "ondo_usd": {"name": "Ondo Finance (RWA)", "symbol": "ONDO", "pair": "ONDO/MXN*", "category": "Oro & RWA", "quote": "USD", "source": "bitso"},
-
-    # 5. Divisas & Stablecoins (FX Bitso)
-    "usd_mxn": {"name": "Dólar Estadounidense", "symbol": "USD", "pair": "USD/MXN", "category": "Divisas & FX", "quote": "MXN", "source": "bitso"},
-    "usdt_mxn": {"name": "Tether USD", "symbol": "USDT", "pair": "USDT/MXN", "category": "Divisas & FX", "quote": "MXN", "source": "bitso"},
-    "eur_usd": {"name": "Euro", "symbol": "EUR", "pair": "EUR/MXN*", "category": "Divisas & FX", "quote": "USD", "source": "bitso"},
-    "pyusd_mxn": {"name": "PayPal USD", "symbol": "PYUSD", "pair": "PYUSD/MXN", "category": "Divisas & FX", "quote": "MXN", "source": "bitso"},
-    "rlusd_mxn": {"name": "Ripple USD", "symbol": "RLUSD", "pair": "RLUSD/MXN", "category": "Divisas & FX", "quote": "MXN", "source": "bitso"},
-
-    # 6. Layer-1 & DeFi Globales (Bitso)
-    "hype_usd": {"name": "Hyperliquid", "symbol": "HYPE", "pair": "HYPE/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "avax_usd": {"name": "Avalanche", "symbol": "AVAX", "pair": "AVAX/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "link_usd": {"name": "Chainlink", "symbol": "LINK", "pair": "LINK/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "near_usd": {"name": "NEAR Protocol", "symbol": "NEAR", "pair": "NEAR/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "uni_usd": {"name": "Uniswap", "symbol": "UNI", "pair": "UNI/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "ada_usd": {"name": "Cardano", "symbol": "ADA", "pair": "ADA/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "bch_usd": {"name": "Bitcoin Cash", "symbol": "BCH", "pair": "BCH/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "xlm_usd": {"name": "Stellar", "symbol": "XLM", "pair": "XLM/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-    "hbar_usd": {"name": "Hedera", "symbol": "HBAR", "pair": "HBAR/MXN*", "category": "Layer-1 & DeFi", "quote": "USD", "source": "bitso"},
-
-    # 7. Memes & Alta Volatilidad (Bitso)
-    "doge_usd": {"name": "Dogecoin", "symbol": "DOGE", "pair": "DOGE/MXN*", "category": "Alta Volatilidad", "quote": "USD", "source": "bitso"},
-    "pepe_usd": {"name": "Pepe", "symbol": "PEPE", "pair": "PEPE/MXN*", "category": "Alta Volatilidad", "quote": "USD", "source": "bitso"},
+    # 3. Petróleo & Energía Global (NYMEX / ICE)
+    "cl_fut": {"name": "Futuros Petróleo WTI", "symbol": "PETROLEO-WTI", "pair": "WTI/MXN*", "category": "Petróleo & Energía", "quote": "USD", "source": "yahoo", "yf_ticker": "CL=F"},
+    "brent_fut": {"name": "Futuros Petróleo Brent", "symbol": "PETROLEO-BRENT", "pair": "BRENT/MXN*", "category": "Petróleo & Energía", "quote": "USD", "source": "yahoo", "yf_ticker": "BZ=F"},
+    "ng_fut": {"name": "Futuros Gas Natural", "symbol": "GAS-NATURAL", "pair": "NGAS/MXN*", "category": "Petróleo & Energía", "quote": "USD", "source": "yahoo", "yf_ticker": "NG=F"},
 }
 
 SUPPORTED_BOOKS: List[str] = list(ASSET_CATALOG.keys())
@@ -323,7 +288,7 @@ class BitsoClient:
             print(f"[BitsoClient] Error obteniendo trades ({book}): {exc}")
         return []
 
-    async def get_order_book(self, book: str = "btc_mxn", top_n: int = 10) -> Dict[str, Any]:
+    async def get_order_book(self, book: str = "usd_mxn", top_n: int = 10) -> Dict[str, Any]:
         meta = ASSET_CATALOG.get(book, {})
         if meta.get("source") == "yahoo":
             tk = self._yf_cache.get(book) or await self._fetch_single_yahoo_asset(book)
@@ -331,9 +296,10 @@ class BitsoClient:
                 return {"bids": [], "asks": [], "bid_volume": 0.0, "ask_volume": 0.0, "imbalance": 0.5}
             bid0 = float(tk["bid"])
             ask0 = float(tk["ask"])
-            step = max(0.01, bid0 * 0.0003)
-            bids = [{"price": round(bid0 - i * step, 2), "amount": round(12.0 - i * 0.8, 2)} for i in range(top_n)]
-            asks = [{"price": round(ask0 + i * step, 2), "amount": round(10.5 - i * 0.7, 2)} for i in range(top_n)]
+            dec = 4 if bid0 < 1 else 2
+            step = max(0.0001 if bid0 < 1 else 0.01, bid0 * 0.0002)
+            bids = [{"price": round(bid0 - i * step, dec), "amount": round(12.0 - i * 0.8, 2)} for i in range(top_n)]
+            asks = [{"price": round(ask0 + i * step, dec), "amount": round(10.5 - i * 0.7, 2)} for i in range(top_n)]
             return {"bids": bids, "asks": asks, "bid_volume": 84.0, "ask_volume": 73.5, "imbalance": 0.533}
 
         try:
@@ -372,7 +338,7 @@ class BitsoClient:
             print(f"[BitsoClient] Error obteniendo order_book ({book}): {exc}")
         return {"bids": [], "asks": [], "bid_volume": 0.0, "ask_volume": 0.0, "imbalance": 0.5}
 
-    async def get_multi_timeframe_ohlc(self, book: str = "btc_mxn") -> Dict[str, List[Dict[str, float]]]:
+    async def get_multi_timeframe_ohlc(self, book: str = "usd_mxn") -> Dict[str, List[Dict[str, float]]]:
         """
         Obtiene series de velas OHLC en dos temporalidades nativas: H1 (1 hora) y M15 (15 minutos).
         Convierte automáticamente a Pesos Mexicanos (MXN).

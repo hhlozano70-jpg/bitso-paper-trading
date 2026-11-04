@@ -146,7 +146,7 @@ export default function App() {
   const [showRiskCalculator, setShowRiskCalculator] = useState(false)
   const [showRealMoneyModal, setShowRealMoneyModal] = useState(false)
   const [showChecklistPanel, setShowChecklistPanel] = useState(false)
-  const [selectedChecklistBook, setSelectedChecklistBook] = useState('btc_mxn')
+  const [selectedChecklistBook, setSelectedChecklistBook] = useState('usd_mxn')
   const [checklistData, setChecklistData] = useState(null)
   const [riskAmountMXN, setRiskAmountMXN] = useState(150)
   const wsRef = useRef(null)
@@ -209,12 +209,12 @@ export default function App() {
     if (fullscreenBook) {
       setFullscreenBook(null)
     } else {
-      setFullscreenBook(book || managed4[focusedAssetIndex]?.book || 'btc_mxn')
+      setFullscreenBook(book || managed4[focusedAssetIndex]?.book || 'usd_mxn')
     }
   }
 
   const fetchChecklist = async (bookToFetch) => {
-    const b = bookToFetch || selectedChecklistBook || 'btc_mxn'
+    const b = bookToFetch || selectedChecklistBook || 'usd_mxn'
     try {
       const res = await fetch(`${API_BASE}/api/trend-pullback/checklist?book=${b}`)
       if (res.ok) {
@@ -283,7 +283,7 @@ export default function App() {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12 }}>
         <RefreshCw size={22} color="#10b981" />
-        <span style={{ fontWeight: 600 }}>Cargando Panel Autónomo de 4 Activos (Cripto, Acciones, Futuros)...</span>
+        <span style={{ fontWeight: 600 }}>Cargando Panel Autónomo de Activos Estables (Monedas, Oro, Petróleo)...</span>
       </div>
     )
   }
@@ -411,11 +411,11 @@ export default function App() {
               Autonomous 4-Asset Portfolio Rotator & Scalper
               <span className="badge-live">
                 <span className="pulse-dot" />
-                39 ACTIVOS GLOBALES (CRIPTO, ACCIONES, FUTUROS, ORO)
+                12 ACTIVOS ESTABLES (DIVISAS FIAT, ORO COMEX/FÍSICO, PETRÓLEO WTI/BRENT)
               </span>
             </div>
             <div style={{ fontSize: '0.76rem', color: '#94a3b8' }}>
-              Rotación 100% automatizada por comportamiento • Sin preguntas • Auto-TP y Auto-SL dinámicos por moneda
+              Estrategia Institucional H1/M15 (1:2 R:R) en Monedas, Oro y Petróleo • Cripto 100% Eliminado
             </div>
           </div>
         </div>
@@ -651,7 +651,7 @@ export default function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>Inspeccionar:</span>
               <div style={{ display: 'flex', gap: 4 }}>
-                {['btc_mxn', 'eth_mxn', 'sol_mxn', 'xrp_mxn', 'nvda_stk', 'aapl_stk', 'nq_fut'].map((b) => (
+                {['usd_mxn', 'gc_fut', 'cl_fut', 'eur_mxn', 'paxg_usd', 'brent_fut', 'gbp_mxn', 'si_fut'].map((b) => (
                   <button
                     key={b}
                     style={{
@@ -1116,7 +1116,7 @@ export default function App() {
                 alignItems: 'center',
                 gap: 5,
               }}
-              onClick={() => handleToggleFullscreen(managed4[focusedAssetIndex]?.book || 'btc_mxn')}
+              onClick={() => handleToggleFullscreen(managed4[focusedAssetIndex]?.book || 'usd_mxn')}
               title="Expandir a Pantalla Completa Total (F11 / ESC)"
             >
               <Maximize2 size={13} /> Pantalla Completa (F11)
@@ -1341,10 +1341,10 @@ export default function App() {
           <div>
             <div className="card-title">
               <Compass size={19} color="#10b981" />
-              <span>Radar Cuantitativo Global: 39 Activos Evaluados para Rotación de Cartera</span>
+              <span>Radar Cuantitativo Institucional: 12 Activos Estables Evaluados para Rotación de Cartera</span>
             </div>
             <div style={{ fontSize: '0.76rem', color: '#94a3b8', marginTop: 2 }}>
-              Acciones de Wall Street (NVDA, TSLA, AAPL, MSFT...), Futuros CME (Nasdaq, S&P 500, Petróleo WTI, Oro COMEX) y Cripto Bitso
+              Divisas Fiat (USD, EUR, GBP, CAD, CHF, JPY), Oro de Reserva Refugio (COMEX / PAXG) y Petróleo Crudo (WTI / Brent)
             </div>
           </div>
         </div>
@@ -1353,12 +1353,11 @@ export default function App() {
         <div className="book-tabs" style={{ marginBottom: 12 }}>
           {[
             { id: 'ALL', label: `🌐 Todos (${opportunities.length})` },
-            { id: 'PREMIER', label: '⭐ Líderes Premier (7)' },
+            { id: 'Divisas & Monedas', label: '💵 Divisas & Monedas (6)' },
+            { id: 'Oro & Metales Refugio', label: '🪙 Oro & Metales Refugio (3)' },
+            { id: 'Petróleo & Energía', label: '🛢️ Petróleo & Energía (3)' },
             { id: 'SNIPER', label: '⚡ Sniper (Score ≥ 76)' },
             { id: 'OVERSOLD', label: '📉 Sobreventa (RSI < 40)' },
-            { id: 'Acciones', label: '📈 Acciones (Wall Street)' },
-            { id: 'Futuros', label: '⚡ Futuros (CME / NYMEX)' },
-            { id: 'Cripto MXN', label: '🪙 Cripto MXN' },
             { id: 'POSITIONS', label: `💼 En Cartera (${openPositionsList.length})` },
           ].map((tab) => (
             <button

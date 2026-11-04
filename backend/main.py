@@ -19,10 +19,10 @@ from trading_bot import TradingBot
 
 
 class OrderRequest(BaseModel):
-    book: str = "btc_mxn"
+    book: str = "usd_mxn"
     side: str  # "BUY" | "SELL"
     mxn_amount: Optional[float] = None
-    crypto_amount: Optional[float] = None
+    crypto_amount: Optional[float] = None  # Cantidad del activo (alias mantenido para compatibilidad)
     reason: Optional[str] = "Orden manual desde terminal"
 
 
@@ -54,8 +54,8 @@ class ForceBotStepRequest(BaseModel):
 
 
 ALLOWED_AUTO_BOOKS = {
-    "btc_mxn", "eth_mxn", "sol_mxn", "xrp_mxn",
-    "nvda_stk", "aapl_stk", "nq_fut"
+    "usd_mxn", "gc_fut", "cl_fut", "eur_mxn", "paxg_usd", "brent_fut",
+    "gbp_mxn", "si_fut", "cad_mxn", "chf_mxn", "jpy_mxn", "ng_fut"
 }
 
 bitso = BitsoClient()
@@ -64,12 +64,13 @@ bot = TradingBot()
 bot.enabled = True
 bot.multi_asset_auto = True
 bot.auto_tp_sl_by_coin = True
+bot.book = "usd_mxn"
 bot.trade_size_pct = 45.0
 bot.cooldown_seconds = 75
 
 scanner = OpportunityScanner()
 
-active_book: str = "btc_mxn"
+active_book: str = "usd_mxn"
 tickers_cache: Dict[str, Dict[str, Any]] = {}
 raw_books_cache: Dict[str, Dict[str, Any]] = {}
 order_book_cache: Dict[str, Dict[str, Any]] = {}
@@ -162,8 +163,15 @@ def _build_managed_4_assets(
     for opp in opportunities_cache:
         if len(selected_books) >= 4:
             break
-        if opp["book"] not in selected_books:
+        if opp["book"] not in selected_books and opp["book"] in ASSET_CATALOG:
             selected_books.append(opp["book"])
+
+    default_fill = ["usd_mxn", "gc_fut", "cl_fut", "eur_mxn"]
+    for db in default_fill:
+        if len(selected_books) >= 4:
+            break
+        if db not in selected_books and db in ASSET_CATALOG:
+            selected_books.append(db)
 
     managed_cards: List[Dict[str, Any]] = []
     for idx, b in enumerate(selected_books[:4]):
@@ -568,13 +576,11 @@ async def lifespan(app: FastAPI):
 
     # Sembrar historial de los primeros libros principales en paralelo
     await asyncio.gather(
-        _seed_book_history("btc_mxn"),
-        _seed_book_history("eth_mxn"),
-        _seed_book_history("sol_mxn"),
-        _seed_book_history("xrp_mxn"),
+        _seed_book_history("usd_mxn"),
+        _seed_book_history("paxg_usd"),
         return_exceptions=True,
     )
-    order_book_cache["btc_mxn"] = await bitso.get_order_book("btc_mxn", top_n=10)
+    order_book_cache["usd_mxn"] = await bitso.get_order_book("usd_mxn", top_n=10)
     _refresh_opportunities()
 
     # Seleccionar automáticamente las primeras 4 mejores oportunidades al arrancar

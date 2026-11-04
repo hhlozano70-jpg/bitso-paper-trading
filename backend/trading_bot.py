@@ -26,7 +26,7 @@ class TradingBot:
         self.multi_asset_auto: bool = True  # Escaneo automático de oportunidades
         self.auto_tp_sl_by_coin: bool = True  # Gestión dinámica 1:2 R:R
         self.strategy: str = "trend_pullback_h1_m15"  # Estrategia por defecto
-        self.book: str = "btc_mxn"
+        self.book: str = "usd_mxn"
         self.trade_size_pct: float = 40.0  # Asignación por operación (2 posiciones principales)
         self.take_profit_pct: float = 1.00  # TP base 1:2 (+1.00% meta)
         self.stop_loss_pct: float = 0.50    # SL base 1:2 (-0.50% riesgo)
