@@ -248,6 +248,7 @@ class TrendPullbackEngine:
     def check_lateral_market(self, closes_m15: List[float], ema20_m15: List[float], lookback: int = 8) -> Tuple[bool, float]:
         """
         Filtro de Exclusión 2: Detecta mercado lateral sin dirección clara (pendiente casi cero).
+        Calibrado para Activos Estables (Divisas Forex, Oro y Petróleo).
         """
         if len(ema20_m15) < lookback:
             return False, 0.0
@@ -255,8 +256,8 @@ class TrendPullbackEngine:
         recent_ema = ema20_m15[-lookback:]
         # Pendiente porcentual por vela en las últimas velas
         slope_pct = (recent_ema[-1] - recent_ema[0]) / max(1e-9, recent_ema[0]) * 100.0 / lookback
-        # Si la variación de la EMA 20 es inferior a 0.012% por vela, se considera mercado plano/lateral
-        is_lateral = abs(slope_pct) < 0.012
+        # En divisas y metales estables, una pendiente menor a 0.0020% por vela M15 indica rango plano
+        is_lateral = abs(slope_pct) < 0.0020
         return is_lateral, round(slope_pct, 4)
 
     def evaluate_strategy(
